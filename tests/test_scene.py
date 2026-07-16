@@ -68,9 +68,29 @@ def test_circle_flattening_is_accurate():
     assert on_circle.sum() >= 64  # the circle produced a dense polyline
 
 
+def test_thick_lineweights_become_quads():
+    doc = ezdxf.new("R2018", setup=True)
+    msp = doc.modelspace()
+    msp.add_line((0.0, 0.0), (100.0, 0.0), dxfattribs={"lineweight": 50})   # 0.50 mm
+    msp.add_line((0.0, 0.0), (0.0, 100.0), dxfattribs={"lineweight": 13})   # 0.13 mm
+    scene = build_scene(Document(doc))
+
+    from render.batches import THICK_FLOATS
+
+    # The 0.50 mm line becomes one quad (6 vertices); the thin one stays GL_LINES.
+    assert scene.thick.vertex_count == 6
+    assert scene.lines.vertex_count == 2
+    assert scene.thick.ranges[0].lineweight == pytest.approx(0.5)
+    verts = scene.thick.data.reshape(-1, THICK_FLOATS)
+    normals = verts[:, 2:4]
+    assert np.allclose(np.hypot(normals[:, 0], normals[:, 1]), 1.0, atol=1e-5)
+    # The horizontal segment's expansion direction is vertical.
+    assert np.allclose(np.abs(normals[:, 1]), 1.0, atol=1e-5)
+
+
 def test_draw_ranges_partition_the_buffer():
     scene = build_scene(make_document())
-    for batch in (scene.lines, scene.triangles, scene.points):
+    for batch in (scene.lines, scene.thick, scene.triangles, scene.points):
         cursor = 0
         for rng in batch.ranges:
             assert rng.first == cursor

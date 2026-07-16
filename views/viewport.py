@@ -29,7 +29,7 @@ from PySide6.QtOpenGL import (
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
-from render.batches import VERTEX_FLOATS, Batch, Scene
+from render.batches import THICK_FLOATS, VERTEX_FLOATS, Batch, Scene
 from render.view import ViewTransform2D
 
 # OpenGL constants — kept as literals so we don't depend on PyOpenGL.
@@ -50,6 +50,9 @@ BACKGROUND = (0.129, 0.149, 0.169)
 AXIS_LEN = 1.0e6  # world units; clipped by GL, cheap to keep "infinite"
 CROSSHAIR_COLOR = QColor(215, 215, 215, 210)
 PICKBOX_PX = 8
+# Lineweight display: mm of paper -> logical pixels (96 dpi reference,
+# AutoCAD LWT look). 0.5 mm ~ 2 px, 1.0 mm ~ 4 px.
+PX_PER_MM = 96.0 / 25.4
 
 
 def _axes_vertices() -> np.ndarray:
@@ -116,8 +119,11 @@ class Viewport(QOpenGLWidget):
         self._gl.initializeOpenGLFunctions()
         self._gl.glClearColor(*BACKGROUND, 1.0)
 
-        self._program = self._compile_program()
+        self._program = self._compile_program("line.vert", "line.frag")
         self._loc_mvp = self._program.uniformLocation("u_mvp")
+        self._thick_program = self._compile_program("thick.vert", "line.frag")
+        self._loc_thick_mvp = self._thick_program.uniformLocation("u_mvp")
+        self._loc_half_world = self._thick_program.uniformLocation("u_half_world")
 
         data = _axes_vertices()
         self._axes_vao, self._axes_vbo, self._axes_count = self._make_vao(data)
@@ -147,6 +153,32 @@ class Viewport(QOpenGLWidget):
         vbo.release()
         return vao, vbo, len(data) // VERTEX_FLOATS
 
+    def _make_thick_vao(self, data: np.ndarray) -> tuple:
+        """Upload interleaved [x, y, nx, ny, r, g, b, a] into a fresh VAO."""
+        prog = self._thick_program
+        loc_pos = prog.attributeLocation("a_pos")
+        loc_normal = prog.attributeLocation("a_normal")
+        loc_color = prog.attributeLocation("a_color")
+        vao = QOpenGLVertexArrayObject(self)
+        vao.create()
+        vao.bind()
+        vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
+        vbo.create()
+        vbo.bind()
+        vbo.allocate(data.tobytes(), data.nbytes)
+        stride = THICK_FLOATS * 4
+        prog.bind()
+        prog.enableAttributeArray(loc_pos)
+        prog.setAttributeBuffer(loc_pos, GL_FLOAT, 0, 2, stride)
+        prog.enableAttributeArray(loc_normal)
+        prog.setAttributeBuffer(loc_normal, GL_FLOAT, 2 * 4, 2, stride)
+        prog.enableAttributeArray(loc_color)
+        prog.setAttributeBuffer(loc_color, GL_FLOAT, 4 * 4, 4, stride)
+        prog.release()
+        vao.release()
+        vbo.release()
+        return vao, vbo, len(data) // THICK_FLOATS
+
     def _upload_scene(self) -> None:
         """(Re)build the scene buffers. Requires a current GL context."""
         for vao, vbo, _count in self._scene_bufs.values():
@@ -164,11 +196,13 @@ class Viewport(QOpenGLWidget):
         for name, batch in batches.items():
             if batch.vertex_count:
                 self._scene_bufs[name] = self._make_vao(batch.data)
+        if self._scene.thick.vertex_count:
+            self._scene_bufs["thick"] = self._make_thick_vao(self._scene.thick.data)
 
-    def _compile_program(self) -> QOpenGLShaderProgram:
+    def _compile_program(self, vert: str, frag: str) -> QOpenGLShaderProgram:
         prog = QOpenGLShaderProgram(self)
-        prog.addShaderFromSourceFile(QOpenGLShader.Vertex, str(SHADER_DIR / "line.vert"))
-        prog.addShaderFromSourceFile(QOpenGLShader.Fragment, str(SHADER_DIR / "line.frag"))
+        prog.addShaderFromSourceFile(QOpenGLShader.Vertex, str(SHADER_DIR / vert))
+        prog.addShaderFromSourceFile(QOpenGLShader.Fragment, str(SHADER_DIR / frag))
         if not prog.link():
             raise RuntimeError(f"shader link failed: {prog.log()}")
         return prog
@@ -215,7 +249,8 @@ class Viewport(QOpenGLWidget):
         self._axes_vao.release()
 
         if self._scene is not None and self._scene_bufs:
-            self._program.setUniformValue(self._loc_mvp, self._mvp(*self._scene.origin))
+            scene_mvp = self._mvp(*self._scene.origin)
+            self._program.setUniformValue(self._loc_mvp, scene_mvp)
             # Fills first, then lines and points on top of them.
             for name, mode in (("triangles", GL_TRIANGLES),
                                ("lines", GL_LINES),
@@ -227,10 +262,30 @@ class Viewport(QOpenGLWidget):
                 vao.bind()
                 gl.glDrawArrays(mode, 0, count)
                 vao.release()
-
-        self._program.release()
+            self._program.release()
+            self._draw_thick(gl, scene_mvp)
+        else:
+            self._program.release()
 
         self._paint_overlay()
+
+    def _draw_thick(self, gl, scene_mvp: QMatrix4x4) -> None:
+        """Thick lineweight quads: one draw per weight range (uniform width)."""
+        buf = self._scene_bufs.get("thick")
+        if buf is None:
+            return
+        vao, _vbo, _count = buf
+        prog = self._thick_program
+        prog.bind()
+        prog.setUniformValue(self._loc_thick_mvp, scene_mvp)
+        vao.bind()
+        for rng in self._scene.thick.ranges:
+            px = max(1.0, rng.lineweight * PX_PER_MM)
+            half_world = (px / 2.0) / self.view.scale
+            prog.setUniformValue1f(self._loc_half_world, half_world)
+            gl.glDrawArrays(GL_TRIANGLES, rng.first, rng.count)
+        vao.release()
+        prog.release()
 
     # -- overlay (QPainter, logical pixels) -----------------------------------
     def _paint_overlay(self) -> None:

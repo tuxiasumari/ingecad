@@ -51,10 +51,12 @@ class VertexBackend(Backend):
         self._flatten = flatten_distance
 
     def _bucket(self, properties: BackendProperties) -> Bucket:
-        key = (properties.layer, properties.color)
+        key = (properties.layer, properties.color, properties.lineweight)
         bucket = self.buckets.get(key)
         if bucket is None:
-            bucket = self.buckets[key] = Bucket(properties.layer, properties.color)
+            bucket = self.buckets[key] = Bucket(
+                properties.layer, properties.color, properties.lineweight
+            )
         return bucket
 
     # -- primitives -----------------------------------------------------------

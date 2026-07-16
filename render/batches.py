@@ -18,7 +18,12 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-VERTEX_FLOATS = 6  # x, y, r, g, b, a
+VERTEX_FLOATS = 6        # x, y, r, g, b, a
+THICK_FLOATS = 8         # x, y, nx, ny, r, g, b, a (n: unit perpendicular)
+# AutoCAD LWT displays weights up to 0.25 mm as one pixel; above that the
+# line grows with the weight. Same split here: thin -> GL_LINES, thick ->
+# screen-constant quads expanded in the shader.
+THIN_MAX_MM = 0.25
 
 
 def parse_color(color: str) -> tuple[float, float, float, float]:
@@ -33,10 +38,11 @@ def parse_color(color: str) -> tuple[float, float, float, float]:
 
 @dataclass
 class Bucket:
-    """Primitives of one (layer, color) group, world float64 coordinates."""
+    """Primitives of one (layer, color, lineweight) group, world float64."""
 
     layer: str
     color: str
+    lineweight: float = 0.25                              # mm, resolved
     lines: list[float] = field(default_factory=list)      # x,y per endpoint
     triangles: list[float] = field(default_factory=list)  # x,y per corner
     points: list[float] = field(default_factory=list)     # x,y per point
@@ -49,18 +55,20 @@ class DrawRange:
     layer: str
     first: int  # vertex index (not float index)
     count: int
+    lineweight: float = 0.25  # mm; drives u_half_world for thick ranges
 
 
 @dataclass
 class Batch:
     """One primitive type packed: interleaved float32 array + its ranges."""
 
-    data: np.ndarray  # shape (n * VERTEX_FLOATS,), float32
+    data: np.ndarray  # shape (n * floats_per_vertex,), float32
     ranges: list[DrawRange]
+    floats_per_vertex: int = VERTEX_FLOATS
 
     @property
     def vertex_count(self) -> int:
-        return len(self.data) // VERTEX_FLOATS
+        return len(self.data) // self.floats_per_vertex
 
 
 @dataclass
@@ -69,7 +77,8 @@ class Scene:
 
     origin: tuple[float, float]                    # float64 world center
     extents: tuple[float, float, float, float]     # world min_x, min_y, max_x, max_y
-    lines: Batch
+    lines: Batch                                   # thin: 6 floats per vertex
+    thick: Batch                                   # quads: 8 floats per vertex
     triangles: Batch
     points: Batch
 
@@ -77,6 +86,7 @@ class Scene:
     def is_empty(self) -> bool:
         return (
             self.lines.vertex_count == 0
+            and self.thick.vertex_count == 0
             and self.triangles.vertex_count == 0
             and self.points.vertex_count == 0
         )
@@ -93,6 +103,8 @@ def _pack_primitive(
         coords = getattr(bucket, attr)
         if not coords:
             continue
+        if attr == "lines" and bucket.lineweight > THIN_MAX_MM:
+            continue  # packed as quads by _pack_thick
         xy = np.asarray(coords, dtype=np.float64).reshape(-1, 2)
         n = len(xy)
         verts = np.empty((n, VERTEX_FLOATS), dtype=np.float32)
@@ -100,10 +112,49 @@ def _pack_primitive(
         verts[:, 1] = xy[:, 1] - oy
         verts[:, 2:6] = parse_color(bucket.color)
         chunks.append(verts.reshape(-1))
-        ranges.append(DrawRange(bucket.layer, first, n))
+        ranges.append(DrawRange(bucket.layer, first, n, bucket.lineweight))
         first += n
     data = np.concatenate(chunks) if chunks else np.empty(0, dtype=np.float32)
     return Batch(data, ranges)
+
+
+def _pack_thick(buckets: list[Bucket], origin: tuple[float, float]) -> Batch:
+    """Thick line segments -> quads (2 triangles, 6 vertices) per segment.
+
+    Each vertex stores the segment point plus a unit perpendicular; the
+    shader expands it by the half lineweight in world units, so thickness
+    stays constant in pixels at any zoom (AutoCAD LWT display).
+    """
+    ox, oy = origin
+    chunks: list[np.ndarray] = []
+    ranges: list[DrawRange] = []
+    first = 0
+    for bucket in buckets:
+        if not bucket.lines or bucket.lineweight <= THIN_MAX_MM:
+            continue
+        seg = np.asarray(bucket.lines, dtype=np.float64).reshape(-1, 2, 2)
+        d = seg[:, 1] - seg[:, 0]
+        length = np.hypot(d[:, 0], d[:, 1])
+        ok = length > 0.0
+        seg, d, length = seg[ok], d[ok], length[ok]
+        if len(seg) == 0:
+            continue
+        normal = np.column_stack((-d[:, 1], d[:, 0])) / length[:, None]
+        p0 = seg[:, 0] - (ox, oy)
+        p1 = seg[:, 1] - (ox, oy)
+        n_seg = len(seg)
+        verts = np.empty((n_seg, 6, THICK_FLOATS), dtype=np.float32)
+        # Triangle strip unrolled: (p0,+n) (p0,-n) (p1,+n) / (p1,+n) (p0,-n) (p1,-n)
+        corners = ((p0, 1), (p0, -1), (p1, 1), (p1, 1), (p0, -1), (p1, -1))
+        for i, (p, sign) in enumerate(corners):
+            verts[:, i, 0:2] = p
+            verts[:, i, 2:4] = normal * sign
+        verts[:, :, 4:8] = parse_color(bucket.color)
+        chunks.append(verts.reshape(-1))
+        ranges.append(DrawRange(bucket.layer, first, n_seg * 6, bucket.lineweight))
+        first += n_seg * 6
+    data = np.concatenate(chunks) if chunks else np.empty(0, dtype=np.float32)
+    return Batch(data, ranges, THICK_FLOATS)
 
 
 def _world_extents(buckets: list[Bucket]) -> tuple[float, float, float, float]:
@@ -123,7 +174,7 @@ def _world_extents(buckets: list[Bucket]) -> tuple[float, float, float, float]:
     return (float(min_x), float(min_y), float(max_x), float(max_y))
 
 
-def pack(buckets: dict[tuple[str, str], Bucket]) -> Scene:
+def pack(buckets: dict[tuple, Bucket]) -> Scene:
     """Pack backend buckets into a Scene, origin at the drawing's center."""
     # Stable order: by layer then color, so ranges group per layer for the
     # future visibility toggle.
@@ -134,6 +185,7 @@ def pack(buckets: dict[tuple[str, str], Bucket]) -> Scene:
         origin=origin,
         extents=extents,
         lines=_pack_primitive(ordered, "lines", origin),
+        thick=_pack_thick(ordered, origin),
         triangles=_pack_primitive(ordered, "triangles", origin),
         points=_pack_primitive(ordered, "points", origin),
     )
