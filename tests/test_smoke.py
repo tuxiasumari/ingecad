@@ -47,11 +47,11 @@ def test_language_switch_retranslates_menus(qapp):
     i18n.set_language("en")
     win = MainWindow()
     try:
-        menus = [a.text() for a in win.menuBar().actions()]
+        menus = [a.text() for a in win._menu_bar.actions()]
         assert "File" in menus and "Tools" in menus
 
         win._set_language("es")
-        menus = [a.text() for a in win.menuBar().actions()]
+        menus = [a.text() for a in win._menu_bar.actions()]
         assert "Archivo" in menus and "Herramientas" in menus
         assert win.windowTitle() == "IngeCAD — Sin nombre"
     finally:

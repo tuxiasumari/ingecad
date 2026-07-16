@@ -10,13 +10,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, QThread, Signal
+from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QThread, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
-from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QLabel,
+    QMainWindow,
+    QMenuBar,
+    QMessageBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 from core import i18n
 from core.document import Document, DocumentError
 from core.i18n import tr
+from views.title_bar import TitleBar
 from core.version import __version__
 from views.viewport import Viewport
 
@@ -59,17 +68,67 @@ class MainWindow(QMainWindow):
         self._opening_name = ""
         self.setWindowTitle(f"IngeCAD — {tr('Untitled')}")
         self.resize(1280, 800)
+        # Own the title bar: the system one follows the desktop's light theme
+        # on GNOME/Wayland and cannot be forced dark (see views/title_bar.py).
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
 
         self.viewport = Viewport(self)
         self.setCentralWidget(self.viewport)
+
+        self._menu_bar = QMenuBar(self)
+        header = QWidget(self)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(0)
+        header_layout.addWidget(TitleBar(self))
+        header_layout.addWidget(self._menu_bar)
+        self.setMenuWidget(header)
 
         self._build_menus()
         self._build_status_bar()
         self.viewport.cursorMoved.connect(self._on_cursor_moved)
 
+        # Frameless windows have no system resize borders; an app-wide filter
+        # turns presses on the outer margin into native resizes, wherever the
+        # child widget under the cursor is. The status bar's size grip still
+        # works as usual.
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.instance().installEventFilter(self)
+
+    RESIZE_MARGIN = 8
+
+    def _edges_at(self, x: int, y: int):
+        edges = Qt.Edges()
+        m = self.RESIZE_MARGIN
+        if x <= m:
+            edges |= Qt.LeftEdge
+        elif x >= self.width() - m:
+            edges |= Qt.RightEdge
+        if y <= m:
+            edges |= Qt.TopEdge
+        elif y >= self.height() - m:
+            edges |= Qt.BottomEdge
+        return edges
+
+    def eventFilter(self, obj, event) -> bool:
+        if (
+            event.type() == QEvent.MouseButtonPress
+            and event.button() == Qt.LeftButton
+            and isinstance(obj, QWidget)
+            and obj.window() is self
+            and not self.isMaximized()
+        ):
+            pos = self.mapFromGlobal(event.globalPosition().toPoint())
+            edges = self._edges_at(pos.x(), pos.y())
+            handle = self.windowHandle()
+            if edges and handle is not None and handle.startSystemResize(edges):
+                return True
+        return super().eventFilter(obj, event)
+
     # -- chrome ---------------------------------------------------------------
     def _build_menus(self) -> None:
-        menu_bar = self.menuBar()
+        menu_bar = self._menu_bar
         menu_bar.clear()
 
         file_menu = menu_bar.addMenu(tr("File"))
