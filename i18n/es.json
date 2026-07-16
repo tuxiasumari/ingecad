@@ -18,6 +18,7 @@
   "Cannot save {name}: {error}": "No se puede guardar {name}: {error}",
   "Cannot open {name}: {error}": "No se puede abrir {name}: {error}",
   "Opened {name}": "Se abrió {name}",
+  "Opened {name} — {count} damaged entities could not be drawn": "Se abrió {name} — {count} entidades dañadas no se pudieron dibujar",
   "Opening {name}...": "Abriendo {name}...",
   "Still opening the previous drawing...": "Todavía se está abriendo el dibujo anterior..."
 }

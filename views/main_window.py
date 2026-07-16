@@ -269,7 +269,14 @@ class MainWindow(QMainWindow):
         self.viewport.set_scene(scene)
         self.viewport.zoom_extents()
         self.setWindowTitle(f"IngeCAD — {document.name}")
-        self.statusBar().showMessage(tr("Opened {name}", name=document.name), 5000)
+        if scene.skipped:
+            self.statusBar().showMessage(
+                tr("Opened {name} — {count} damaged entities could not be drawn",
+                   name=document.name, count=len(scene.skipped)),
+                10000,
+            )
+        else:
+            self.statusBar().showMessage(tr("Opened {name}", name=document.name), 5000)
 
     def _on_open_failed(self, error: str) -> None:
         self.statusBar().clearMessage()

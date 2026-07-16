@@ -81,6 +81,8 @@ class Scene:
     thick: Batch                                   # quads: 8 floats per vertex
     triangles: Batch
     points: Batch
+    # Entities the tolerant frontend could not draw ("TYPE(#handle): why").
+    skipped: list[str] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:

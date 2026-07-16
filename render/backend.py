@@ -23,8 +23,12 @@ from ezdxf.addons.drawing.properties import BackendProperties
 from ezdxf.math import Vec2
 from ezdxf.math.triangulation import mapbox_earcut_2d
 
+import logging
+
 from core.document import Document
 from render.batches import Bucket, Scene, pack
+
+logger = logging.getLogger(__name__)
 
 # Curve flattening: max sagitta as a fraction of the drawing diagonal.
 # 1/20000 keeps a full-drawing circle visually smooth and stays sane on
@@ -142,14 +146,58 @@ def _ring_extent(ring: list[Vec2]) -> float:
     return (max(xs) - min(xs)) * (max(ys) - min(ys))
 
 
+def _modelspace_extents(document: Document):
+    msp = document.modelspace()
+    try:
+        return bbox.extents(msp, fast=True)
+    except Exception:
+        # One malformed entity (e.g. a HATCH spline edge with bad knots)
+        # aborts the whole-layout pass; retry entity by entity and keep
+        # whatever measures cleanly.
+        from ezdxf.math import BoundingBox
+
+        total = BoundingBox()
+        for entity in msp:
+            try:
+                one = bbox.extents([entity], fast=True)
+            except Exception:
+                continue
+            if one.has_data:
+                total.extend([one.extmin, one.extmax])
+        return total
+
+
 def _flatten_distance(document: Document) -> float:
-    extents = bbox.extents(document.modelspace(), fast=True)
+    extents = _modelspace_extents(document)
     if not extents.has_data:
         return 0.01
     dx = extents.extmax.x - extents.extmin.x
     dy = extents.extmax.y - extents.extmin.y
     diagonal = (dx * dx + dy * dy) ** 0.5
     return max(diagonal * FLATTEN_REL, MIN_FLATTEN)
+
+
+class TolerantFrontend(Frontend):
+    """Frontend that survives malformed entities.
+
+    Real-world files (and satellite conversions) carry broken geometry —
+    e.g. LibreDWG emitting HATCH spline edges with inconsistent knot counts.
+    AutoCAD still opens those plans; one bad entity must never blank the
+    whole drawing. Failures are skipped, logged, and counted for the UI.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.skipped: list[str] = []
+
+    def draw_entity(self, entity, properties) -> None:
+        try:
+            super().draw_entity(entity, properties)
+        except Exception as exc:
+            handle = getattr(entity.dxf, "handle", None) or "?"
+            note = f"{entity.dxftype()}(#{handle}): {exc}"
+            self.skipped.append(note)
+            logger.warning("skipped unrenderable entity %s", note)
 
 
 def frontend_config(flatten: float) -> Configuration:
@@ -165,7 +213,8 @@ def build_scene(document: Document) -> Scene:
     flatten = _flatten_distance(document)
     backend = VertexBackend(flatten)
     context = RenderContext(document.doc)
-    Frontend(context, backend, frontend_config(flatten)).draw_layout(
-        document.modelspace()
-    )
-    return pack(backend.buckets)
+    frontend = TolerantFrontend(context, backend, frontend_config(flatten))
+    frontend.draw_layout(document.modelspace())
+    scene = pack(backend.buckets)
+    scene.skipped = list(frontend.skipped)
+    return scene

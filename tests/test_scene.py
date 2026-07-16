@@ -99,6 +99,25 @@ def test_draw_ranges_partition_the_buffer():
         assert cursor == batch.vertex_count
 
 
+def test_malformed_entity_is_skipped_not_fatal():
+    # Real-world case: LibreDWG emitted a HATCH spline edge with an
+    # inconsistent knot count; one bad entity must never blank the drawing.
+    doc = ezdxf.new("R2018")
+    msp = doc.modelspace()
+    msp.add_line((0.0, 0.0), (10.0, 0.0))
+    hatch = msp.add_hatch(color=2)
+    edge_path = hatch.paths.add_edge_path()
+    edge_path.add_spline(
+        control_points=[(0, 0), (5, 5), (10, 0)],
+        knot_values=[0.0] * 32,  # wrong: 3 control points + degree 3 need 7
+        degree=3,
+    )
+    scene = build_scene(Document(doc))
+    assert scene.lines.vertex_count >= 2      # the LINE still renders
+    assert len(scene.skipped) == 1
+    assert scene.skipped[0].startswith("HATCH")
+
+
 def test_parse_color_rgb_and_rgba():
     assert parse_color("#ff0000") == (1.0, 0.0, 0.0, 1.0)
     r, g, b, a = parse_color("#00ff0080")
