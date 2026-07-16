@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environment (local, recreate with requirements.txt)
+venv/
+
+# Test caches
+.pytest_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Real-world DWG/DXF test files from colleagues stay untracked
+# (private data; the fidelity bench reads them from capturas/ locally)
+capturas/
+*.dwg
+*.dxf
+!tests/data/*.dxf
