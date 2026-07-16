@@ -12,9 +12,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
-from PySide6.QtWidgets import QLabel, QMainWindow
+from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox
 
 from core import i18n
+from core.document import Document, DocumentError
 from core.i18n import tr
 from core.version import __version__
 from views.viewport import Viewport
@@ -23,6 +24,7 @@ from views.viewport import Viewport
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self.document: Document | None = None
         self.setWindowTitle(f"IngeCAD — {tr('Untitled')}")
         self.resize(1280, 800)
 
@@ -39,6 +41,11 @@ class MainWindow(QMainWindow):
         menu_bar.clear()
 
         file_menu = menu_bar.addMenu(tr("File"))
+        open_act = QAction(tr("Open..."), self)
+        open_act.setShortcut(QKeySequence.Open)
+        open_act.triggered.connect(self._open_dialog)
+        file_menu.addAction(open_act)
+        file_menu.addSeparator()
         quit_act = QAction(tr("Quit"), self)
         quit_act.setShortcut(QKeySequence.Quit)
         quit_act.triggered.connect(self.close)
@@ -71,7 +78,8 @@ class MainWindow(QMainWindow):
         self._retranslate()
 
     def _retranslate(self) -> None:
-        self.setWindowTitle(f"IngeCAD — {tr('Untitled')}")
+        name = self.document.name if self.document else tr("Untitled")
+        self.setWindowTitle(f"IngeCAD — {name}")
         self._build_menus()
 
     def _build_status_bar(self) -> None:
@@ -84,10 +92,40 @@ class MainWindow(QMainWindow):
     def _on_cursor_moved(self, wx: float, wy: float) -> None:
         self._coords_label.setText(f"{wx:.4f}, {wy:.4f}")
 
-    # -- documents (entry point wired now; import lands in Phase 1/2) ---------
-    def open_path(self, path: Path) -> None:
-        """OS file associations and argv[1] land here."""
-        self.statusBar().showMessage(
-            tr("Cannot open {name} yet — file import lands in Phase 1", name=path.name),
-            5000,
+    # -- documents -------------------------------------------------------------
+    def _open_dialog(self) -> None:
+        filename, _filter = QFileDialog.getOpenFileName(
+            self,
+            tr("Open Drawing"),
+            "",
+            tr("DXF drawings (*.dxf);;All files (*)"),
         )
+        if filename:
+            self.open_path(Path(filename))
+
+    def open_path(self, path: Path) -> None:
+        """OS file associations, argv[1], and File > Open land here."""
+        if path.suffix.lower() == ".dwg":
+            # LibreDWG bridge lands in Phase 2.
+            self.statusBar().showMessage(
+                tr("DWG opens land in Phase 2 — convert to DXF with dwg2dxf for now"),
+                8000,
+            )
+            return
+        from render.backend import build_scene
+
+        try:
+            document = Document.load(path)
+            scene = build_scene(document)
+        except DocumentError as exc:
+            QMessageBox.warning(
+                self,
+                tr("Open Drawing"),
+                tr("Cannot open {name}: {error}", name=path.name, error=str(exc)),
+            )
+            return
+        self.document = document
+        self.viewport.set_scene(scene)
+        self.viewport.zoom_extents()
+        self.setWindowTitle(f"IngeCAD — {document.name}")
+        self.statusBar().showMessage(tr("Opened {name}", name=document.name), 5000)

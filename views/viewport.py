@@ -29,11 +29,14 @@ from PySide6.QtOpenGL import (
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
+from render.batches import VERTEX_FLOATS, Batch, Scene
 from render.view import ViewTransform2D
 
 # OpenGL constants — kept as literals so we don't depend on PyOpenGL.
 GL_FLOAT = 0x1406
+GL_POINTS = 0x0000
 GL_LINES = 0x0001
+GL_TRIANGLES = 0x0004
 GL_COLOR_BUFFER_BIT = 0x00004000
 GL_DEPTH_TEST = 0x0B71
 GL_BLEND = 0x0BE2
@@ -50,14 +53,14 @@ PICKBOX_PX = 8
 
 
 def _axes_vertices() -> np.ndarray:
-    """X and Y world axes through the origin, interleaved pos(2) + color(3)."""
+    """X and Y world axes through the origin, interleaved pos(2) + color(4)."""
     rx, gx, bx = 0.48, 0.18, 0.18   # muted red for X
     ry, gy, by = 0.16, 0.42, 0.18   # muted green for Y
     data = [
-        -AXIS_LEN, 0.0, rx, gx, bx,
-        AXIS_LEN, 0.0, rx, gx, bx,
-        0.0, -AXIS_LEN, ry, gy, by,
-        0.0, AXIS_LEN, ry, gy, by,
+        -AXIS_LEN, 0.0, rx, gx, bx, 1.0,
+        AXIS_LEN, 0.0, rx, gx, bx, 1.0,
+        0.0, -AXIS_LEN, ry, gy, by, 1.0,
+        0.0, AXIS_LEN, ry, gy, by, 1.0,
     ]
     return np.asarray(data, dtype=np.float32)
 
@@ -79,14 +82,28 @@ class Viewport(QOpenGLWidget):
         self._last_pos = QPointF()
         self._gl: Optional[QOpenGLFunctions] = None
         self._program: Optional[QOpenGLShaderProgram] = None
+        self._scene: Optional[Scene] = None
+        self._scene_dirty = False
+        # Per-primitive GPU buffers: name -> (vao, vbo, vertex_count)
+        self._scene_bufs: dict[str, tuple] = {}
 
-    # -- document hooks (placeholder until Phase 1) --------------------------
+    # -- document hooks -------------------------------------------------------
+    def set_scene(self, scene: Optional[Scene]) -> None:
+        """Adopt a packed scene; the GL upload happens on the next frame."""
+        self._scene = scene
+        self._scene_dirty = True
+        self.update()
+
     def scene_bounds(self) -> tuple[float, float, float, float]:
         """World bounds to fit on Zoom Extents.
 
-        Phase 1 replaces this with the open document's extents; the placeholder
-        frames the origin at a human scale so the empty canvas is navigable.
+        Without a document (or with an empty one) a human-scale frame around
+        the origin keeps the canvas navigable.
         """
+        if self._scene is not None and not self._scene.is_empty:
+            min_x, min_y, max_x, max_y = self._scene.extents
+            if max_x > min_x or max_y > min_y:
+                return (min_x, min_y, max_x, max_y)
         return (-50.0, -50.0, 50.0, 50.0)
 
     def zoom_extents(self) -> None:
@@ -101,27 +118,52 @@ class Viewport(QOpenGLWidget):
 
         self._program = self._compile_program()
         self._loc_mvp = self._program.uniformLocation("u_mvp")
-        loc_pos = self._program.attributeLocation("a_pos")
-        loc_color = self._program.attributeLocation("a_color")
 
         data = _axes_vertices()
-        self._axes_count = len(data) // 5
-        self._axes_vao = QOpenGLVertexArrayObject(self)
-        self._axes_vao.create()
-        self._axes_vao.bind()
-        self._axes_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
-        self._axes_vbo.create()
-        self._axes_vbo.bind()
-        self._axes_vbo.allocate(data.tobytes(), data.nbytes)
-        stride = 5 * 4
+        self._axes_vao, self._axes_vbo, self._axes_count = self._make_vao(data)
+        # A scene set before the context existed uploads on the first frame.
+        if self._scene is not None:
+            self._scene_dirty = True
+
+    def _make_vao(self, data: np.ndarray) -> tuple:
+        """Upload interleaved [x, y, r, g, b, a] float32 data into a fresh VAO."""
+        loc_pos = self._program.attributeLocation("a_pos")
+        loc_color = self._program.attributeLocation("a_color")
+        vao = QOpenGLVertexArrayObject(self)
+        vao.create()
+        vao.bind()
+        vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
+        vbo.create()
+        vbo.bind()
+        vbo.allocate(data.tobytes(), data.nbytes)
+        stride = VERTEX_FLOATS * 4
         self._program.bind()
         self._program.enableAttributeArray(loc_pos)
         self._program.setAttributeBuffer(loc_pos, GL_FLOAT, 0, 2, stride)
         self._program.enableAttributeArray(loc_color)
-        self._program.setAttributeBuffer(loc_color, GL_FLOAT, 2 * 4, 3, stride)
+        self._program.setAttributeBuffer(loc_color, GL_FLOAT, 2 * 4, 4, stride)
         self._program.release()
-        self._axes_vao.release()
-        self._axes_vbo.release()
+        vao.release()
+        vbo.release()
+        return vao, vbo, len(data) // VERTEX_FLOATS
+
+    def _upload_scene(self) -> None:
+        """(Re)build the scene buffers. Requires a current GL context."""
+        for vao, vbo, _count in self._scene_bufs.values():
+            vbo.destroy()
+            vao.destroy()
+        self._scene_bufs.clear()
+        self._scene_dirty = False
+        if self._scene is None:
+            return
+        batches: dict[str, Batch] = {
+            "triangles": self._scene.triangles,
+            "lines": self._scene.lines,
+            "points": self._scene.points,
+        }
+        for name, batch in batches.items():
+            if batch.vertex_count:
+                self._scene_bufs[name] = self._make_vao(batch.data)
 
     def _compile_program(self) -> QOpenGLShaderProgram:
         prog = QOpenGLShaderProgram(self)
@@ -131,16 +173,25 @@ class Viewport(QOpenGLWidget):
             raise RuntimeError(f"shader link failed: {prog.log()}")
         return prog
 
-    def resizeGL(self, w: int, h: int) -> None:  # noqa: ARG002 — logical size read from widget
+    def resizeEvent(self, event) -> None:
+        # Tracked here and not in resizeGL: resizeEvent always fires, even on
+        # platforms without a GL context (CI's offscreen runner), keeping the
+        # view transform testable headless.
+        super().resizeEvent(event)
         self.view.width = max(self.width(), 1)
         self.view.height = max(self.height(), 1)
 
-    def _mvp(self) -> QMatrix4x4:
+    def _mvp(self, ox: float = 0.0, oy: float = 0.0) -> QMatrix4x4:
+        """World -> clip for vertices stored relative to origin (ox, oy).
+
+        The subtraction (view center - vertex origin) happens here in float64;
+        both operands are large (UTM), the difference is small, and only the
+        small number reaches the float32 matrix.
+        """
         kx, ky, cx, cy = self.view.ndc_factors()
         m = QMatrix4x4()
         m.scale(kx, ky, 1.0)
-        # Translation computed here in float64; cast to float32 only inside Qt.
-        m.translate(-cx, -cy, 0.0)
+        m.translate(-(cx - ox), -(cy - oy), 0.0)
         return m
 
     def paintGL(self) -> None:
@@ -153,11 +204,30 @@ class Viewport(QOpenGLWidget):
         gl.glClearColor(*BACKGROUND, 1.0)
         gl.glClear(GL_COLOR_BUFFER_BIT)
 
+        if self._scene_dirty:
+            self._upload_scene()
+
         self._program.bind()
+
         self._program.setUniformValue(self._loc_mvp, self._mvp())
         self._axes_vao.bind()
         gl.glDrawArrays(GL_LINES, 0, self._axes_count)
         self._axes_vao.release()
+
+        if self._scene is not None and self._scene_bufs:
+            self._program.setUniformValue(self._loc_mvp, self._mvp(*self._scene.origin))
+            # Fills first, then lines and points on top of them.
+            for name, mode in (("triangles", GL_TRIANGLES),
+                               ("lines", GL_LINES),
+                               ("points", GL_POINTS)):
+                buf = self._scene_bufs.get(name)
+                if buf is None:
+                    continue
+                vao, _vbo, count = buf
+                vao.bind()
+                gl.glDrawArrays(mode, 0, count)
+                vao.release()
+
         self._program.release()
 
         self._paint_overlay()

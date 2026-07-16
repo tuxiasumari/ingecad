@@ -16,9 +16,8 @@ def test_tr_spanish_catalog_loads():
     i18n.set_language("es")
     try:
         assert i18n.tr("File") == "Archivo"
-        out = i18n.tr("Cannot open {name} yet — file import lands in Phase 1",
-                      name="plano.dwg")
-        assert "plano.dwg" in out and "Fase 1" in out
+        out = i18n.tr("Cannot open {name}: {error}", name="plano.dxf", error="x")
+        assert out == "No se puede abrir plano.dxf: x"
     finally:
         i18n.set_language("en")
 

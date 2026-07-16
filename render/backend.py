@@ -1,0 +1,148 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Marco Sumari Tellez and IngeCAD contributors.
+"""GL vertex backend for ``ezdxf.addons.drawing`` — the "regen" engine.
+
+The ezdxf frontend resolves the hard CAD semantics (block references, MTEXT
+layout, linetype dashing, hatch patterns, dimension graphics, OCS) and hands
+this backend nothing but resolved 2D primitives with final colors. We collect
+them into (layer, color) buckets and pack them into GPU-ready arrays.
+
+Curves are flattened at a fixed world-space tolerance derived from the
+drawing size — a "regen", AutoCAD-style. Deep zoom-in past that tolerance
+shows facets until a future re-regen at view scale (known trade-off, F1).
+"""
+from __future__ import annotations
+
+from typing import Iterable
+
+from ezdxf import bbox
+from ezdxf.addons.drawing import Frontend, RenderContext
+from ezdxf.addons.drawing.backend import Backend, BkPath2d, BkPoints2d
+from ezdxf.addons.drawing.config import Configuration
+from ezdxf.addons.drawing.properties import BackendProperties
+from ezdxf.math import Vec2
+from ezdxf.math.triangulation import mapbox_earcut_2d
+
+from core.document import Document
+from render.batches import Bucket, Scene, pack
+
+# Curve flattening: max sagitta as a fraction of the drawing diagonal.
+# 1/20000 keeps a full-drawing circle visually smooth and stays sane on
+# kilometre-scale UTM drawings.
+FLATTEN_REL = 1.0 / 20000.0
+MIN_FLATTEN = 1e-6
+
+
+class VertexBackend(Backend):
+    """Collects frontend primitives into per-(layer, color) buckets."""
+
+    def __init__(self, flatten_distance: float) -> None:
+        super().__init__()
+        self.buckets: dict[tuple[str, str], Bucket] = {}
+        self._flatten = flatten_distance
+
+    def _bucket(self, properties: BackendProperties) -> Bucket:
+        key = (properties.layer, properties.color)
+        bucket = self.buckets.get(key)
+        if bucket is None:
+            bucket = self.buckets[key] = Bucket(properties.layer, properties.color)
+        return bucket
+
+    # -- primitives -----------------------------------------------------------
+    def draw_point(self, pos: Vec2, properties: BackendProperties) -> None:
+        self._bucket(properties).points.extend((pos.x, pos.y))
+
+    def draw_line(self, start: Vec2, end: Vec2, properties: BackendProperties) -> None:
+        self._bucket(properties).lines.extend((start.x, start.y, end.x, end.y))
+
+    def draw_solid_lines(
+        self, lines: Iterable[tuple[Vec2, Vec2]], properties: BackendProperties
+    ) -> None:
+        out = self._bucket(properties).lines
+        for start, end in lines:
+            out.extend((start.x, start.y, end.x, end.y))
+
+    def draw_path(self, path: BkPath2d, properties: BackendProperties) -> None:
+        out = self._bucket(properties).lines
+        prev: Vec2 | None = None
+        for v in path.flattening(self._flatten):
+            if prev is not None:
+                out.extend((prev.x, prev.y, v.x, v.y))
+            prev = v
+
+    def draw_filled_polygon(
+        self, points: BkPoints2d, properties: BackendProperties
+    ) -> None:
+        self._fill(points.vertices(), [], properties)
+
+    def draw_filled_paths(
+        self, paths: Iterable[BkPath2d], properties: BackendProperties
+    ) -> None:
+        # Each path may carry holes as sub-paths (glyphs like "O", hatch
+        # islands). The largest ring is the exterior — the frontend guarantees
+        # holes lie inside their path's exterior.
+        for path in paths:
+            rings = [list(sub.flattening(self._flatten)) for sub in path.sub_paths()]
+            rings = [r for r in rings if len(r) >= 3]
+            if not rings:
+                continue
+            rings.sort(key=_ring_extent, reverse=True)
+            self._fill(rings[0], rings[1:], properties)
+
+    def _fill(
+        self,
+        exterior: list[Vec2],
+        holes: list[list[Vec2]],
+        properties: BackendProperties,
+    ) -> None:
+        if len(exterior) < 3:
+            return
+        try:
+            triangles = mapbox_earcut_2d(exterior, holes or None)
+        except (ValueError, ZeroDivisionError):
+            return  # degenerate ring: drop the fill, keep going
+        out = self._bucket(properties).triangles
+        for a, b, c in triangles:
+            out.extend((a.x, a.y, b.x, b.y, c.x, c.y))
+
+    def draw_image(self, image_data, properties: BackendProperties) -> None:
+        pass  # raster underlays: out of F1 scope
+
+    # -- lifecycle --------------------------------------------------------------
+    def configure(self, config: Configuration) -> None:
+        pass
+
+    def set_background(self, color: str) -> None:
+        pass  # viewport keeps its own model-space background
+
+    def clear(self) -> None:
+        self.buckets.clear()
+
+    def finalize(self) -> None:
+        pass
+
+
+def _ring_extent(ring: list[Vec2]) -> float:
+    xs = [v.x for v in ring]
+    ys = [v.y for v in ring]
+    return (max(xs) - min(xs)) * (max(ys) - min(ys))
+
+
+def _flatten_distance(document: Document) -> float:
+    extents = bbox.extents(document.modelspace(), fast=True)
+    if not extents.has_data:
+        return 0.01
+    dx = extents.extmax.x - extents.extmin.x
+    dy = extents.extmax.y - extents.extmin.y
+    diagonal = (dx * dx + dy * dy) ** 0.5
+    return max(diagonal * FLATTEN_REL, MIN_FLATTEN)
+
+
+def build_scene(document: Document) -> Scene:
+    """Run the ezdxf frontend over modelspace and pack the result ("regen")."""
+    flatten = _flatten_distance(document)
+    backend = VertexBackend(flatten)
+    context = RenderContext(document.doc)
+    config = Configuration(max_flattening_distance=flatten)
+    Frontend(context, backend, config).draw_layout(document.modelspace())
+    return pack(backend.buckets)

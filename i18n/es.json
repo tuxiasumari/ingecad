@@ -6,5 +6,10 @@
   "Language": "Idioma",
   "Zoom Extents": "Zoom extensión",
   "Untitled": "Sin nombre",
-  "Cannot open {name} yet — file import lands in Phase 1": "Aún no se puede abrir {name} — la importación de archivos llega en la Fase 1"
+  "Open...": "Abrir...",
+  "Open Drawing": "Abrir dibujo",
+  "DXF drawings (*.dxf);;All files (*)": "Dibujos DXF (*.dxf);;Todos los archivos (*)",
+  "DWG opens land in Phase 2 — convert to DXF with dwg2dxf for now": "La apertura de DWG llega en la Fase 2 — por ahora convertí a DXF con dwg2dxf",
+  "Cannot open {name}: {error}": "No se puede abrir {name}: {error}",
+  "Opened {name}": "Se abrió {name}"
 }
