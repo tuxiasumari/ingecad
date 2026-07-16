@@ -11,6 +11,9 @@ venv/
 # Test caches
 .pytest_cache/
 
+# Satellite binaries built/downloaded locally (LibreDWG, ODA)
+vendor/
+
 # Editors / OS
 .vscode/
 .idea/

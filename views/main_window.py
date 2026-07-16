@@ -49,7 +49,14 @@ class _OpenWorker(QObject):
         from render.backend import build_scene
 
         try:
-            document = Document.load(self._path)
+            if self._path.suffix.lower() == ".dwg":
+                from formats.dwg_bridge import dwg_to_dxf
+
+                # Transparent conversion: the user never sees the temp DXF.
+                document = Document.load(dwg_to_dxf(self._path))
+                document.path = self._path
+            else:
+                document = Document.load(self._path)
             scene = build_scene(document)
         except DocumentError as exc:
             self.failed.emit(str(exc))
@@ -136,6 +143,10 @@ class MainWindow(QMainWindow):
         open_act.setShortcut(QKeySequence.Open)
         open_act.triggered.connect(self._open_dialog)
         file_menu.addAction(open_act)
+        save_as_act = QAction(tr("Save As..."), self)
+        save_as_act.setShortcut(QKeySequence.SaveAs)
+        save_as_act.triggered.connect(self._save_as_dialog)
+        file_menu.addAction(save_as_act)
         file_menu.addSeparator()
         quit_act = QAction(tr("Quit"), self)
         quit_act.setShortcut(QKeySequence.Quit)
@@ -189,20 +200,51 @@ class MainWindow(QMainWindow):
             self,
             tr("Open Drawing"),
             "",
-            tr("DXF drawings (*.dxf);;All files (*)"),
+            tr("Drawings (*.dwg *.dxf);;All files (*)"),
         )
         if filename:
             self.open_path(Path(filename))
 
+    def _save_as_dialog(self) -> None:
+        if self.document is None:
+            self.statusBar().showMessage(tr("Nothing to save yet"), 4000)
+            return
+        filename, selected = QFileDialog.getSaveFileName(
+            self,
+            tr("Save Drawing As"),
+            self.document.name,
+            tr("DWG r2000 (*.dwg);;DXF (*.dxf)"),
+        )
+        if not filename:
+            return
+        path = Path(filename)
+        if path.suffix.lower() not in (".dwg", ".dxf"):
+            path = path.with_suffix(".dwg" if "dwg" in selected.lower() else ".dxf")
+        try:
+            self.document.save_as(path)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                tr("Save Drawing As"),
+                tr("Cannot save {name}: {error}", name=path.name, error=str(exc)),
+            )
+            return
+        self.setWindowTitle(f"IngeCAD — {self.document.name}")
+        self.statusBar().showMessage(tr("Saved {name}", name=path.name), 5000)
+
     def open_path(self, path: Path) -> None:
         """OS file associations, argv[1], and File > Open land here."""
         if path.suffix.lower() == ".dwg":
-            # LibreDWG bridge lands in Phase 2.
-            self.statusBar().showMessage(
-                tr("DWG opens land in Phase 2 — convert to DXF with dwg2dxf for now"),
-                8000,
-            )
-            return
+            from formats.dwg_bridge import have_dwg_support
+
+            if not have_dwg_support():
+                QMessageBox.warning(
+                    self,
+                    tr("Open Drawing"),
+                    tr("DWG support needs the LibreDWG converter (dwg2dxf), "
+                       "which was not found."),
+                )
+                return
         if self._open_thread is not None:
             self.statusBar().showMessage(tr("Still opening the previous drawing..."), 4000)
             return

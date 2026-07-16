@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=IngeCAD
+GenericName=2D CAD
+GenericName[es]=CAD 2D
+Comment=View and edit DWG/DXF drawings
+Comment[es]=Ver y editar planos DWG/DXF
+Exec=ingecad %f
+Terminal=false
+Categories=Graphics;Engineering;2DGraphics;
+MimeType=image/vnd.dwg;image/vnd.dxf;
+Icon=ingecad
+StartupWMClass=ingecad
