@@ -89,7 +89,7 @@ def test_frontend_config_caps_hatch_density():
 
     cfg = frontend_config(0.2)
     assert cfg.max_flattening_distance == 0.2
-    assert cfg.min_hatch_line_distance == pytest.approx(0.05)
+    assert cfg.min_hatch_line_distance == pytest.approx(0.2 / 64.0)
     assert cfg.hatching_timeout == HATCHING_TIMEOUT
 
 

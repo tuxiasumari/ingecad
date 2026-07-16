@@ -32,13 +32,16 @@ from render.batches import Bucket, Scene, pack
 FLATTEN_REL = 1.0 / 20000.0
 MIN_FLATTEN = 1e-6
 
-# Hatch density cap, AutoCAD MaxHatch style: pattern lines closer than 1/4 of
-# the flattening distance are sub-pixel at drawing scale; ezdxf then falls
-# back to a solid fill, which is what such a pattern looks like anyway.
-# Real-world case: a 4.5 MB pavement plan went 287 s -> 3 s with this cap.
-HATCH_DENSITY_REL = 0.25
-# Backstop for pathological hatches that stay under the density cap but
-# explode combinatorially; ezdxf drops the pattern (solid fallback) on timeout.
+# Hatch density cap, AutoCAD MaxHatch style: pattern lines closer than this
+# fraction of the flattening distance fall back to ezdxf's solid fill. Keep
+# it generous — stipple patterns (AR-CONC, sand) on detail sheets are much
+# finer than the sheet-wide flatten distance and must render as patterns
+# (pavement-plan lesson: 1/4 turned them all into solid blobs). The timeout
+# below, not this cap, is what contains pathological hatches.
+HATCH_DENSITY_REL = 1.0 / 64.0
+# Backstop for hatches that explode combinatorially: ezdxf aborts the pattern
+# after this many seconds and falls back to a solid fill. This is what turned
+# a frozen 287 s open (30 s x ~40 hatches) into ~3 s.
 HATCHING_TIMEOUT = 5.0
 
 
