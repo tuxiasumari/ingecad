@@ -209,15 +209,78 @@ class MainWindow(QMainWindow):
 
         self.history = History()
         self.dispatcher = Dispatcher(echo=self.command_line.echo)
+
+        from views.tool_controller import ToolController
+
+        self.tools = ToolController(self)
+        self.viewport.tool_delegate = self.tools
+        self.tools.changed.connect(self.viewport.update)
+
         self._register_commands()
         self.command_line.set_completions(self.dispatcher.known_names())
         self.command_line.submitted.connect(self._on_command_submitted)
-        self.command_line.cancelled.connect(self.dispatcher.cancel)
+        self.command_line.cancelled.connect(self._on_prompt_cancelled)
         self.command_line.echo(tr("IngeCAD — type a command (L, C, Z, ...)"))
+        self._build_mode_toggles()
 
     def _on_command_submitted(self, text: str) -> None:
         self.command_line.echo_input(text)
+        if self.tools.on_text(text):
+            return
         self.dispatcher.submit(text)
+
+    def _on_prompt_cancelled(self) -> None:
+        if self.tools.active():
+            self.tools.cancel()
+        self.dispatcher.cancel()
+
+    # -- drafting mode toggles (F3/F8/F10, classic status bar) ------------------
+    def _build_mode_toggles(self) -> None:
+        from PySide6.QtGui import QShortcut
+
+        self._mode_labels: dict[str, QLabel] = {}
+        for key, name, label in (("osnap", "F3", "REFENT"),
+                                 ("ortho", "F8", "ORTO"),
+                                 ("polar", "F10", "POLAR")):
+            widget = QLabel(label)
+            widget.setToolTip(name)
+            self._mode_labels[key] = widget
+            self.statusBar().addPermanentWidget(widget)
+            QShortcut(QKeySequence(name), self,
+                      lambda k=key: self._toggle_mode(k))
+        self._update_mode_labels()
+
+    def _toggle_mode(self, which: str) -> None:
+        value = self.tools.toggle(which)
+        self._update_mode_labels()
+        names = {"osnap": tr("Object snap"), "ortho": tr("Ortho"),
+                 "polar": tr("Polar")}
+        state = tr("on") if value else tr("off")
+        self.statusBar().showMessage(f"{names[which]}: {state}", 2000)
+
+    def _update_mode_labels(self) -> None:
+        for key, widget in self._mode_labels.items():
+            active = getattr(self.tools, f"{key}_on")
+            widget.setStyleSheet(
+                "color: #e8e8e8; font-weight: bold;" if active
+                else "color: #6a6a6a;")
+
+    # -- document plumbing for the tools ---------------------------------------
+    def new_document(self) -> None:
+        self.document = Document.new()
+        self.viewport.set_scene(None)
+        self.tools.attach_document(self.document)
+        self.setWindowTitle(f"IngeCAD — {tr('Untitled')}")
+
+    def regen_in_memory(self) -> None:
+        """Full regen of the in-memory document (edits included)."""
+        if self.document is None:
+            return
+        from render.backend import build_scene
+
+        scene = build_scene(self.document)
+        self.viewport.set_scene(scene)
+        self.tools.mark_scene_merged()
 
     def _register_commands(self) -> None:
         d = self.dispatcher
@@ -232,10 +295,12 @@ class MainWindow(QMainWindow):
         d.register("SAVEAS", lambda *a: self._save_as_dialog())
         d.register("QUIT", lambda *a: self.close())
         d.register("EXIT", lambda *a: self.close())
+        # Phase 4 drawing tools.
+        for name in ("LINE", "CIRCLE", "ARC", "PLINE", "RECTANG", "POLYGON"):
+            d.register(name, lambda *a, n=name: self.tools.start_tool(n))
         # In-scope commands that land in later phases: answer honestly.
         for name, phase in (
-            ("LINE", 4), ("CIRCLE", 4), ("ARC", 4), ("PLINE", 4),
-            ("RECTANG", 4), ("POLYGON", 4), ("DIST", 4),
+            ("DIST", 4),
             ("ERASE", 5), ("MOVE", 5), ("COPY", 5), ("ROTATE", 5),
             ("OFFSET", 5), ("TRIM", 5), ("EXTEND", 5), ("MIRROR", 5),
             ("SCALE", 5), ("FILLET", 5), ("EXPLODE", 5),
@@ -265,20 +330,25 @@ class MainWindow(QMainWindow):
             self.command_line.echo(tr('Unknown ZOOM option "{name}".', name=opt))
 
     def _cmd_regen(self, *args) -> None:
-        if self.document is None or self.document.path is None:
+        if self.document is None:
             self.command_line.echo(tr("Nothing to regenerate"))
             return
-        self.open_path(self.document.path)
+        self.regen_in_memory()
+        self.command_line.echo(tr("Regenerated."))
 
     def _cmd_undo(self, *args) -> None:
         command = self.history.undo()
         self.command_line.echo(
             tr("Undo: {name}", name=command.name) if command else tr("Nothing to undo"))
+        if command is not None:
+            self.tools.after_history_change()
 
     def _cmd_redo(self, *args) -> None:
         command = self.history.redo()
         self.command_line.echo(
             tr("Redo: {name}", name=command.name) if command else tr("Nothing to redo"))
+        if command is not None:
+            self.tools.after_history_change()
 
     def _build_status_bar(self) -> None:
         # Coordinate readout, bottom-left — the classic AutoCAD tracker.
@@ -364,6 +434,7 @@ class MainWindow(QMainWindow):
         self.document = document
         self.viewport.set_scene(scene)
         self.viewport.zoom_extents()
+        self.tools.attach_document(document, flatten=scene.flatten)
         self.setWindowTitle(f"IngeCAD — {document.name}")
         if scene.layout_name:
             self.statusBar().showMessage(

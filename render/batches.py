@@ -159,6 +159,8 @@ class Scene:
     layout_name: Optional[str] = None
     # Canvas color for that layout (RGBA floats); None = viewport default.
     background: Optional[tuple[float, float, float, float]] = None
+    # Flattening distance used for the build (reused by overlay regens).
+    flatten: float = 0.01
 
     @property
     def is_empty(self) -> bool:

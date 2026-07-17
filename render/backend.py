@@ -279,6 +279,21 @@ def frontend_config(flatten: float) -> Configuration:
     )
 
 
+def build_scene_for_entities(document: Document, entities, flatten: float) -> Scene:
+    """Pack just ``entities`` (freshly drawn ones) into a small overlay scene.
+
+    Drawing must feel instant on any file size: instead of a full regen per
+    added entity, the viewport draws this overlay on top of the base scene
+    and merges on the next real regen. ``flatten`` comes from the base scene
+    build so curve quality matches.
+    """
+    backend = VertexBackend(flatten)
+    context = TolerantRenderContext(document.doc)
+    frontend = TolerantFrontend(context, backend, frontend_config(flatten))
+    frontend.draw_entities(entities)
+    return pack(backend.buckets)
+
+
 def build_scene(document: Document) -> Scene:
     """Run the ezdxf frontend over the drawing and pack the result ("regen").
 
@@ -295,6 +310,7 @@ def build_scene(document: Document) -> Scene:
     scene = pack(backend.buckets)
     scene.skipped = list(frontend.skipped)
     scene.layout_name = layout_name
+    scene.flatten = flatten
     if layout_name is not None:
         # Paper-white background like AutoCAD's layout tabs; the sheet's
         # colors were resolved by ezdxf against this background already.

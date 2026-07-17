@@ -96,12 +96,23 @@ class Viewport(QOpenGLWidget):
         self._zoom_window = False
         self._rubber: Optional[QRubberBand] = None
         self._rubber_origin = QPointF()
+        self._overlay_scene: Optional[Scene] = None
+        self._overlay_dirty = False
+        self._overlay_bufs: dict[str, tuple] = {}
+        # Interactive tool hook (ToolController): hover/click/preview/markers.
+        self.tool_delegate = None
 
     # -- document hooks -------------------------------------------------------
     def set_scene(self, scene: Optional[Scene]) -> None:
         """Adopt a packed scene; the GL upload happens on the next frame."""
         self._scene = scene
         self._scene_dirty = True
+        self.update()
+
+    def set_overlay_scene(self, scene: Optional[Scene]) -> None:
+        """Freshly drawn entities, rendered on top of the base scene."""
+        self._overlay_scene = scene
+        self._overlay_dirty = True
         self.update()
 
     # -- view stack (ZOOM Previous) -------------------------------------------
@@ -271,6 +282,8 @@ class Viewport(QOpenGLWidget):
 
         if self._scene_dirty:
             self._upload_scene()
+        if self._overlay_dirty:
+            self._upload_overlay()
 
         self._program.bind()
 
@@ -302,7 +315,39 @@ class Viewport(QOpenGLWidget):
         else:
             self._program.release()
 
+        if self._overlay_scene is not None and self._overlay_bufs:
+            self._program.bind()
+            self._program.setUniformValue(
+                self._loc_mvp, self._mvp(*self._overlay_scene.origin))
+            for name, mode in (("triangles", GL_TRIANGLES),
+                               ("lines", GL_LINES),
+                               ("points", GL_POINTS)):
+                buf = self._overlay_bufs.get(name)
+                if buf is None:
+                    continue
+                vao, _vbo, count = buf
+                vao.bind()
+                gl.glDrawArrays(mode, 0, count)
+                vao.release()
+            self._program.release()
+
         self._paint_overlay()
+
+    def _upload_overlay(self) -> None:
+        for vao, vbo, _count in self._overlay_bufs.values():
+            vbo.destroy()
+            vao.destroy()
+        self._overlay_bufs.clear()
+        self._overlay_dirty = False
+        if self._overlay_scene is None:
+            return
+        for name in ("triangles", "lines", "points"):
+            batch: Batch = getattr(self._overlay_scene, name)
+            if batch.vertex_count:
+                self._overlay_bufs[name] = self._make_vao(batch.data)
+        # Note: thick-lineweight quads in the overlay are not drawn yet —
+        # freshly drawn entities default to thin lines; the next full regen
+        # merges them with correct weights.
 
     def _view_world_rect(self) -> tuple[float, float, float, float]:
         x0, y1 = self.view.screen_to_world(0.0, 0.0)          # top-left
@@ -339,9 +384,56 @@ class Viewport(QOpenGLWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         self._draw_ucs_icon(p)
+        if self.tool_delegate is not None and self.tool_delegate.active():
+            self._draw_tool_preview(p)
         if self._cursor is not None and not self._panning:
             self._draw_crosshair(p, self._cursor)
         p.end()
+
+    # AutoSnap marker glyphs (classic yellow), drawn in logical pixels.
+    MARKER_COLOR = QColor(255, 220, 0)
+    MARKER_SIZE = 10
+
+    def _draw_tool_preview(self, p: QPainter) -> None:
+        delegate = self.tool_delegate
+        preview_color = (QColor(90, 90, 90) if self._light_background()
+                        else QColor(200, 200, 200))
+        pen = QPen(preview_color, 1, Qt.DashLine)
+        p.setPen(pen)
+        for (ax, ay), (bx, by) in delegate.preview_segments():
+            x1, y1 = self.view.world_to_screen(ax, ay)
+            x2, y2 = self.view.world_to_screen(bx, by)
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+        hit = delegate.snap_hit
+        if hit is not None:
+            sx, sy = self.view.world_to_screen(hit.x, hit.y)
+            self._draw_snap_marker(p, hit.kind, sx, sy)
+
+    def _draw_snap_marker(self, p: QPainter, kind: str, x: float, y: float) -> None:
+        s = self.MARKER_SIZE / 2.0
+        p.setPen(QPen(self.MARKER_COLOR, 2))
+        if kind == "END":       # square
+            p.drawRect(x - s, y - s, 2 * s, 2 * s)
+        elif kind == "MID":     # triangle
+            p.drawPolygon([QPointF(x, y - s), QPointF(x - s, y + s),
+                           QPointF(x + s, y + s)])
+        elif kind == "CEN":     # circle
+            p.drawEllipse(QPointF(x, y), s, s)
+        elif kind == "NOD":     # circle with X
+            p.drawEllipse(QPointF(x, y), s, s)
+            p.drawLine(QPointF(x - s, y - s), QPointF(x + s, y + s))
+            p.drawLine(QPointF(x - s, y + s), QPointF(x + s, y - s))
+        elif kind == "INT":     # X
+            p.drawLine(QPointF(x - s, y - s), QPointF(x + s, y + s))
+            p.drawLine(QPointF(x - s, y + s), QPointF(x + s, y - s))
+        elif kind == "PER":     # right-angle symbol
+            p.drawLine(QPointF(x - s, y - s), QPointF(x - s, y + s))
+            p.drawLine(QPointF(x - s, y + s), QPointF(x + s, y + s))
+            p.drawLine(QPointF(x - s, y), QPointF(x, y))
+            p.drawLine(QPointF(x, y), QPointF(x, y + s))
+        else:                   # NEA: bowtie
+            p.drawPolygon([QPointF(x - s, y - s), QPointF(x + s, y + s),
+                           QPointF(x + s, y - s), QPointF(x - s, y + s)])
 
     def _draw_ucs_icon(self, p: QPainter) -> None:
         """Classic UCS icon: red X / green Y arrows at the world origin.
@@ -399,6 +491,13 @@ class Viewport(QOpenGLWidget):
             self.setCursor(Qt.ClosedHandCursor)
             self.update()
             return
+        if (event.button() == Qt.LeftButton and self.tool_delegate is not None
+                and self.tool_delegate.active()):
+            pos = event.position()
+            wx, wy = self.view.screen_to_world(pos.x(), pos.y())
+            self.tool_delegate.on_click(wx, wy)
+            self.update()
+            return
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
@@ -438,6 +537,10 @@ class Viewport(QOpenGLWidget):
         else:
             self._cursor = pos
             wx, wy = self.view.screen_to_world(pos.x(), pos.y())
+            if self.tool_delegate is not None and self.tool_delegate.active():
+                from views.tool_controller import SNAP_PX
+
+                self.tool_delegate.on_hover(wx, wy, SNAP_PX / self.view.scale)
             self.cursorMoved.emit(wx, wy)
         self.update()
 
