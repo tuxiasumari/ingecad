@@ -373,6 +373,28 @@ def test_extend_ignores_phantom_arc_circle():
     assert any(l.dxf.end.x == pytest.approx(60.0) for l in lines)
 
 
+def test_extend_polyline_ends():
+    # The V-shaped polyline: both tips extend to a boundary above.
+    h = Harness()
+    h.msp.add_lwpolyline([(2.0, 8.0), (5.0, 2.0), (8.0, 8.0)])
+    h.msp.add_line((-10.0, 10.0), (20.0, 10.0))   # boundary
+    tool = ExtendTool(h.ctx)
+    tool.start()
+    tool.on_selection([])
+    tool.on_point((7.5, 7.0))     # near the (8,8) tip
+    pts = h.msp.query("LWPOLYLINE")[0].get_points("xy")
+    assert (round(pts[-1][0], 6), round(pts[-1][1], 6)) == (9.0, 10.0)
+    tool.on_point((2.4, 7.2))     # near the start tip
+    pts = h.msp.query("LWPOLYLINE")[0].get_points("xy")
+    assert (round(pts[0][0], 6), round(pts[0][1], 6)) == (1.0, 10.0)
+    # undo twice restores the original V
+    h.history.undo()
+    h.history.undo()
+    pts = h.msp.query("LWPOLYLINE")[0].get_points("xy")
+    assert (round(pts[0][0], 6), round(pts[0][1], 6)) == (2.0, 8.0)
+    assert (round(pts[-1][0], 6), round(pts[-1][1], 6)) == (8.0, 8.0)
+
+
 def test_offset_tool_line():
     h = Harness()
     h.msp.add_line((0, 0), (100, 0))

@@ -448,19 +448,35 @@ class _TrimExtendBase(Tool):
             self.ctx.echo(tr("TRIM supports LINE, PLINE, CIRCLE and ARC for now."))
 
     def _extend(self, entity, point, segs, circles) -> None:
-        if entity.dxftype() != "LINE":
-            self.ctx.echo(tr("EXTEND supports LINE for now."))
-            return
-        seg = (entity.dxf.start.x, entity.dxf.start.y,
-               entity.dxf.end.x, entity.dxf.end.y)
-        pick_t = _param_on_segment(seg, point)
-        new_seg = editmath.extend_segment(seg, segs, circles, pick_t)
-        if new_seg is None:
-            self.ctx.echo(tr("No boundary edge to extend to."))
-            return
-        self._replace("EXTEND", entity,
-                      [lambda msp, p=new_seg:
-                           msp.add_line((p[0], p[1]), (p[2], p[3]))])
+        t = entity.dxftype()
+        if t == "LINE":
+            seg = (entity.dxf.start.x, entity.dxf.start.y,
+                   entity.dxf.end.x, entity.dxf.end.y)
+            pick_t = _param_on_segment(seg, point)
+            new_seg = editmath.extend_segment(seg, segs, circles, pick_t)
+            if new_seg is None:
+                self.ctx.echo(tr("No boundary edge to extend to."))
+                return
+            self._replace("EXTEND", entity,
+                          [lambda msp, p=new_seg:
+                               msp.add_line((p[0], p[1]), (p[2], p[3]))])
+        elif t == "LWPOLYLINE":
+            pts = entity.get_points("xyb")
+            if any(abs(p[2]) > 1e-12 for p in pts):
+                self.ctx.echo(tr("Curved polyline segments not supported yet."))
+                return
+            if entity.closed:
+                self.ctx.echo(tr("A closed polyline cannot be extended."))
+                return
+            new_pts = editmath.extend_polyline(
+                [(p[0], p[1]) for p in pts], False, point, segs, circles)
+            if new_pts is None:
+                self.ctx.echo(tr("No boundary edge to extend to."))
+                return
+            self._replace("EXTEND", entity,
+                          [lambda msp, c=new_pts: msp.add_lwpolyline(c)])
+        else:
+            self.ctx.echo(tr("EXTEND supports LINE and PLINE for now."))
 
 
 class TrimTool(_TrimExtendBase):

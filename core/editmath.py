@@ -307,6 +307,38 @@ def extend_segment(seg: Seg, edges: list[Seg],
     return (x1, y1, px, py) if forward else (px, py, x2, y2)
 
 
+def extend_polyline(points: list[Point], closed: bool, pick_point: Point,
+                    edges: list[Seg],
+                    circles: list[tuple[Point, float]]):
+    """Extend the end of an open polyline nearest to the pick.
+
+    The polyline's own other segments also act as boundaries. Returns the
+    new vertex list, or None (closed polylines cannot extend; no boundary).
+    """
+    n = len(points)
+    if closed or n < 2:
+        return None
+    own = [(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1])
+           for i in range(n - 1)]
+    d_start = math.hypot(pick_point[0] - points[0][0],
+                         pick_point[1] - points[0][1])
+    d_end = math.hypot(pick_point[0] - points[-1][0],
+                       pick_point[1] - points[-1][1])
+    if d_end <= d_start:
+        seg = (points[-2][0], points[-2][1], points[-1][0], points[-1][1])
+        boundaries = edges + own[:-1]
+        new = extend_segment(seg, boundaries, circles, 1.0)
+        if new is None:
+            return None
+        return points[:-1] + [(new[2], new[3])]
+    seg = (points[1][0], points[1][1], points[0][0], points[0][1])
+    boundaries = edges + own[1:]
+    new = extend_segment(seg, boundaries, circles, 1.0)
+    if new is None:
+        return None
+    return [(new[2], new[3])] + points[1:]
+
+
 # -- OFFSET --------------------------------------------------------------------
 
 def offset_line(seg: Seg, distance: float, side_point: Point) -> Seg:
