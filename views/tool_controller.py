@@ -16,12 +16,17 @@ from PySide6.QtCore import QObject, Signal
 from core import actions
 from core.coords import CoordinateError, parse_point
 from core.i18n import tr
+from core.select import GeometryIndex
 from core.snap import SnapEngine, SnapHit
 from render.backend import _flatten_distance, build_scene_for_entities
 from tools.base import Tool, ToolContext
 from tools.draw import TOOL_CLASSES
+from tools.edit import EDIT_TOOL_CLASSES
 
-SNAP_PX = 12.0  # aperture in logical pixels
+SNAP_PX = 12.0   # aperture in logical pixels
+PICK_PX = 8.0    # pick box half-size in logical pixels
+
+ALL_TOOL_CLASSES = {**TOOL_CLASSES, **EDIT_TOOL_CLASSES}
 
 
 class ToolController(QObject):
@@ -39,10 +44,20 @@ class ToolController(QObject):
         self._cursor: Optional[tuple[float, float]] = None
         self._flatten = 0.01
         self._base_handles: set[str] = set()
+        # Selection state (idle noun set, or the set a tool is acquiring).
+        self.index: Optional[GeometryIndex] = None
+        self.selection: set[str] = set()
+        self._selecting_for: Optional[Tool] = None
+        self._window_anchor: Optional[tuple[float, float]] = None
+        self._pick_tolerance = 1.0  # world units, refreshed on hover
 
     # -- document lifecycle ----------------------------------------------------
     def attach_document(self, document, flatten: Optional[float] = None) -> None:
         self.snap_engine = SnapEngine(document)
+        self.index = GeometryIndex(document)
+        self.selection = set()
+        self._selecting_for = None
+        self._window_anchor = None
         self._flatten = flatten if flatten else _flatten_distance(
             document.modelspace())
         self._base_handles = set()
@@ -80,14 +95,58 @@ class ToolController(QObject):
             prompt=self.window.command_line.echo,
             echo=self.window.command_line.echo,
             finish=self._finish,
+            services=self,
         )
-        self.tool = TOOL_CLASSES[name](ctx)
+        self.tool = ALL_TOOL_CLASSES[name](ctx)
         self.tool.start()
+        if self.tool is not None and self.tool.wants_selection:
+            if self.selection:
+                # noun-verb: the preselected set feeds the command directly
+                entities = self._selection_entities()
+                self.clear_selection()
+                self.tool.on_selection(entities)
+            else:
+                self._selecting_for = self.tool
+                self.window.command_line.echo(
+                    tr("Select objects (Enter when done):"))
+        self.changed.emit()
+
+    # -- services for editing tools (ToolContext.services) ---------------------
+    def pick_entity(self, point):
+        if self.index is None:
+            return None
+        handle = self.index.pick(point, self._pick_tolerance)
+        return self.index.entity(handle) if handle else None
+
+    def edges_geometry(self, handles=None, exclude=None):
+        """(segments, circles) for TRIM/EXTEND edge math."""
+        if self.index is None:
+            return [], []
+        if handles is None:
+            handles = [e.dxf.handle for e in self.window.document.modelspace()]
+        wanted = [h for h in handles if h != exclude]
+        segs = [tuple(s) for s in self.index.segments_of(wanted)]
+        circles = [((c[0], c[1]), c[2]) for c in self.index.circles_of(wanted)]
+        return segs, circles
+
+    def _selection_entities(self) -> list:
+        out = []
+        for h in self.selection:
+            e = self.index.entity(h) if self.index else None
+            if e is not None and e.is_alive:
+                out.append(e)
+        return out
+
+    def clear_selection(self) -> None:
+        self.selection = set()
+        self._window_anchor = None
         self.changed.emit()
 
     def _finish(self) -> None:
         self.tool = None
         self.snap_hit = None
+        self._selecting_for = None
+        self._window_anchor = None
         self.changed.emit()
 
     def cancel(self) -> None:
@@ -96,18 +155,35 @@ class ToolController(QObject):
             self.tool = None  # avoid re-entry via ctx.finish
             tool.on_cancel()
             self._finish()
+        elif self.selection or self._window_anchor:
+            self.clear_selection()
 
     # -- command execution and incremental render ------------------------------
     def _execute(self, command) -> None:
         self.window.history.execute(command)
+        self._invalidate_geometry()
+        if isinstance(command, actions.AddEntityCommand):
+            self._refresh_overlay()
+        else:
+            # edits touch existing (base-scene) entities: regen in memory
+            self.window.regen_in_memory()
+
+    def _invalidate_geometry(self) -> None:
         if self.snap_engine is not None:
             self.snap_engine.invalidate()
-        self._refresh_overlay()
+        if self.index is not None:
+            self.index.invalidate()
 
     def after_history_change(self) -> None:
         """Called by U/REDO. Rebuild the overlay; regen if base went stale."""
-        if self.snap_engine is not None:
-            self.snap_engine.invalidate()
+        self._invalidate_geometry()
+        tops = [(self.window.history._undo or [None])[-1],
+                (self.window.history._redo or [None])[-1]]
+        if any(t is not None and not isinstance(t, actions.AddEntityCommand)
+               for t in tops):
+            # an edit command crossed the undo boundary: base scene is stale
+            self.window.regen_in_memory()
+            return
         alive = {c.entity.dxf.handle for c in self._draw_commands()
                  if c.entity is not None}
         if self._base_handles - alive:
@@ -137,17 +213,80 @@ class ToolController(QObject):
     # -- pointer input ---------------------------------------------------------
     def on_hover(self, wx: float, wy: float, threshold_world: float) -> None:
         self._cursor = (wx, wy)
+        self._pick_tolerance = threshold_world * (PICK_PX / SNAP_PX)
         self.snap_hit = None
-        if self.osnap_on and self.snap_engine is not None:
+        needs_snap = self.tool is not None and self._selecting_for is None
+        if needs_snap and self.osnap_on and self.snap_engine is not None:
             self.snap_hit = self.snap_engine.find(
                 (wx, wy), threshold_world,
                 from_point=self.tool.last_point if self.tool else None,
             )
 
-    def on_click(self, wx: float, wy: float) -> None:
+    def in_selection_mode(self) -> bool:
+        return self.tool is None or self._selecting_for is not None
+
+    def on_click(self, wx: float, wy: float, shift: bool = False) -> None:
+        if self.in_selection_mode():
+            self._selection_click(wx, wy, shift)
+            self.changed.emit()
+            return
         if self.tool is None:
             return
+        self.tool.shift = shift
         self.tool.on_point(self.resolved_point(wx, wy))
+        self.changed.emit()
+
+    def _selection_click(self, wx: float, wy: float, shift: bool) -> None:
+        if self.index is None:
+            if self.window.document is None:
+                return
+            self.index = GeometryIndex(self.window.document)
+        if self._window_anchor is not None:
+            # second corner: apply window (L->R, fully inside) or crossing
+            ax, ay = self._window_anchor
+            self._window_anchor = None
+            rect = (min(ax, wx), min(ay, wy), max(ax, wx), max(ay, wy))
+            hits = (self.index.window(rect) if wx >= ax
+                    else self.index.crossing(rect))
+            if shift:
+                self.selection -= set(hits)
+            else:
+                self.selection |= set(hits)
+            self._echo_count()
+            return
+        handle = self.index.pick((wx, wy), self._pick_tolerance)
+        if handle is None:
+            self._window_anchor = (wx, wy)
+            return
+        if shift:
+            self.selection.discard(handle)
+        else:
+            self.selection.add(handle)
+        self._echo_count()
+
+    def _echo_count(self) -> None:
+        if self.selection:
+            self.window.command_line.echo(
+                tr("{count} selected.", count=len(self.selection)))
+
+    def selection_rect(self):
+        """(rect, crossing?) while a window pick is in progress."""
+        if self._window_anchor is None or self._cursor is None:
+            return None
+        ax, ay = self._window_anchor
+        wx, wy = self._cursor
+        rect = (min(ax, wx), min(ay, wy), max(ax, wx), max(ay, wy))
+        return rect, wx < ax
+
+    def finish_selection(self) -> None:
+        """Enter during a tool's 'Select objects' phase."""
+        tool = self._selecting_for
+        if tool is None:
+            return
+        self._selecting_for = None
+        entities = self._selection_entities()
+        self.clear_selection()
+        tool.on_selection(entities)
         self.changed.emit()
 
     def resolved_point(self, wx: float, wy: float) -> tuple[float, float]:
@@ -172,6 +311,13 @@ class ToolController(QObject):
     # -- prompt input ----------------------------------------------------------
     def on_text(self, text: str) -> bool:
         """Prompt input while a tool is active. True if consumed."""
+        if self._selecting_for is not None:
+            if not text.strip():
+                self.finish_selection()
+                return True
+            self.window.command_line.echo(
+                tr("Select objects (Enter when done):"))
+            return True
         if self.tool is None:
             return False
         stripped = text.strip()
@@ -206,3 +352,14 @@ class ToolController(QObject):
         if self.tool is None or self._cursor is None:
             return []
         return self.tool.preview_segments(self.resolved_point(*self._cursor))
+
+    def highlight_geometry(self):
+        """(segments, circles, boxes) of the current selection, world coords."""
+        if not self.selection or self.index is None:
+            import numpy as np
+
+            empty = np.empty((0, 4))
+            return empty, empty, empty
+        return (self.index.segments_of(self.selection),
+                self.index.circles_of(self.selection),
+                self.index.boxes_of(self.selection))

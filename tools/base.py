@@ -21,6 +21,10 @@ class ToolContext:
     prompt: Callable[[str], None]              # show prompt text
     echo: Callable[[str], None]                # log a message
     finish: Callable[[], None]                 # tool is done: deactivate
+    # Editing services (selection, entity picking, edge geometry). The GUI
+    # supplies the ToolController; tests supply a fake with the same duck
+    # methods: pick_entity(point), edges_geometry(handles|None).
+    services: object = None
 
 
 @dataclass
@@ -29,8 +33,14 @@ class Tool:
     name: str = "TOOL"
     last_point: Optional[Point] = None         # anchor for @rel / distances
     preview_points: list[Point] = field(default_factory=list)
+    # Editing tools consume the current selection (noun-verb) or ask for
+    # one ("Select objects:") before their point prompts.
+    wants_selection: bool = False
+    shift = False                              # Shift held at last click
 
     def start(self) -> None: ...
+
+    def on_selection(self, entities: list) -> None: ...
 
     def on_point(self, point: Point) -> None: ...
 

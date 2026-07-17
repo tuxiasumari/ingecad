@@ -210,3 +210,161 @@ def add_polygon(center, vertex, sides: int) -> AddEntityCommand:
     pts = polygon_points(center, vertex, sides)
     return AddEntityCommand(
         "POLYGON", lambda msp: msp.add_lwpolyline(pts, close=True))
+
+
+# -- editing actions (headless, undoable) --------------------------------------
+
+class TransformCommand(Command):
+    """Apply a Matrix44 to entities in place; undo applies the inverse."""
+
+    def __init__(self, name: str, entities, matrix) -> None:
+        self.name = name
+        self.entities = list(entities)
+        self.matrix = matrix
+
+    def do(self, document) -> None:
+        for e in self.entities:
+            e.transform(self.matrix)
+        document.dirty = True
+
+    def undo(self, document) -> None:
+        import numpy as np
+        from ezdxf.math import Matrix44
+
+        inverse = Matrix44(self.matrix)
+        inverse.inverse()
+        for e in self.entities:
+            e.transform(inverse)
+        document.dirty = True
+
+
+class EraseCommand(Command):
+    """Unlink entities from modelspace (keeps them alive for exact undo)."""
+
+    name = "ERASE"
+
+    def __init__(self, entities) -> None:
+        self.entities = list(entities)
+
+    def do(self, document) -> None:
+        msp = document.modelspace()
+        for e in self.entities:
+            msp.unlink_entity(e)
+        document.dirty = True
+
+    def undo(self, document) -> None:
+        msp = document.modelspace()
+        for e in self.entities:
+            msp.add_entity(e)
+        document.dirty = True
+
+
+class CopyEntitiesCommand(Command):
+    """Copy entities transformed by a Matrix44; undo removes the copies."""
+
+    name = "COPY"
+
+    def __init__(self, entities, matrix) -> None:
+        self.sources = list(entities)
+        self.matrix = matrix
+        self.copies = []
+
+    def do(self, document) -> None:
+        msp = document.modelspace()
+        self.copies = []
+        for e in self.sources:
+            clone = e.copy()
+            clone.transform(self.matrix)
+            msp.add_entity(clone)
+            self.copies.append(clone)
+        document.dirty = True
+
+    def undo(self, document) -> None:
+        msp = document.modelspace()
+        for clone in self.copies:
+            msp.delete_entity(clone)
+        self.copies = []
+        document.dirty = True
+
+
+class ReplaceEntitiesCommand(Command):
+    """Swap old entities for new ones (TRIM/EXTEND/FILLET results).
+
+    Old entities are unlinked (kept alive), new ones created by factories.
+    """
+
+    def __init__(self, name: str, old_entities, factories) -> None:
+        self.name = name
+        self.old_entities = list(old_entities)
+        self._factories = list(factories)
+        self.new_entities = []
+
+    def do(self, document) -> None:
+        msp = document.modelspace()
+        for e in self.old_entities:
+            msp.unlink_entity(e)
+        self.new_entities = [factory(msp) for factory in self._factories]
+        document.dirty = True
+
+    def undo(self, document) -> None:
+        msp = document.modelspace()
+        for e in self.new_entities:
+            msp.delete_entity(e)
+        self.new_entities = []
+        for e in self.old_entities:
+            msp.add_entity(e)
+        document.dirty = True
+
+
+def move_entities(entities, dx: float, dy: float) -> TransformCommand:
+    from ezdxf.math import Matrix44
+
+    return TransformCommand("MOVE", entities, Matrix44.translate(dx, dy, 0.0))
+
+
+def rotate_entities(entities, base, angle_deg: float) -> TransformCommand:
+    import math as _math
+
+    from ezdxf.math import Matrix44
+
+    m = (Matrix44.translate(-base[0], -base[1], 0.0)
+         @ Matrix44.z_rotate(_math.radians(angle_deg))
+         @ Matrix44.translate(base[0], base[1], 0.0))
+    return TransformCommand("ROTATE", entities, m)
+
+
+def scale_entities(entities, base, factor: float) -> TransformCommand:
+    from ezdxf.math import Matrix44
+
+    m = (Matrix44.translate(-base[0], -base[1], 0.0)
+         @ Matrix44.scale(factor, factor, factor)
+         @ Matrix44.translate(base[0], base[1], 0.0))
+    return TransformCommand("SCALE", entities, m)
+
+
+def _mirror_matrix(p1, p2):
+    import math as _math
+
+    from ezdxf.math import Matrix44
+
+    ang = _math.atan2(p2[1] - p1[1], p2[0] - p1[0])
+    return (Matrix44.translate(-p1[0], -p1[1], 0.0)
+            @ Matrix44.z_rotate(-ang)
+            @ Matrix44.scale(1.0, -1.0, 1.0)
+            @ Matrix44.z_rotate(ang)
+            @ Matrix44.translate(p1[0], p1[1], 0.0))
+
+
+def mirror_entities(entities, p1, p2, keep_source: bool = True) -> Command:
+    m = _mirror_matrix(p1, p2)
+    if keep_source:
+        cmd = CopyEntitiesCommand(entities, m)
+        cmd.name = "MIRROR"
+        return cmd
+    return TransformCommand("MIRROR", entities, m)
+
+
+def copy_entities(entities, dx: float, dy: float) -> CopyEntitiesCommand:
+    from ezdxf.math import Matrix44
+
+    return CopyEntitiesCommand(entities, Matrix44.translate(dx, dy, 0.0))

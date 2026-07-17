@@ -295,15 +295,14 @@ class MainWindow(QMainWindow):
         d.register("SAVEAS", lambda *a: self._save_as_dialog())
         d.register("QUIT", lambda *a: self.close())
         d.register("EXIT", lambda *a: self.close())
-        # Phase 4 drawing tools.
-        for name in ("LINE", "CIRCLE", "ARC", "PLINE", "RECTANG", "POLYGON"):
+        # Phase 4 drawing + Phase 5 editing tools.
+        for name in ("LINE", "CIRCLE", "ARC", "PLINE", "RECTANG", "POLYGON",
+                     "ERASE", "MOVE", "COPY", "ROTATE", "SCALE", "MIRROR",
+                     "OFFSET", "TRIM", "EXTEND", "FILLET"):
             d.register(name, lambda *a, n=name: self.tools.start_tool(n))
         # In-scope commands that land in later phases: answer honestly.
         for name, phase in (
-            ("DIST", 4),
-            ("ERASE", 5), ("MOVE", 5), ("COPY", 5), ("ROTATE", 5),
-            ("OFFSET", 5), ("TRIM", 5), ("EXTEND", 5), ("MIRROR", 5),
-            ("SCALE", 5), ("FILLET", 5), ("EXPLODE", 5),
+            ("DIST", 4), ("EXPLODE", 6),
             ("BLOCK", 6), ("INSERT", 6), ("HATCH", 6), ("LAYER", 6),
             ("AREA", 7), ("LIST", 7),
         ):

@@ -384,8 +384,10 @@ class Viewport(QOpenGLWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         self._draw_ucs_icon(p)
-        if self.tool_delegate is not None and self.tool_delegate.active():
-            self._draw_tool_preview(p)
+        if self.tool_delegate is not None:
+            self._draw_selection(p)
+            if self.tool_delegate.active():
+                self._draw_tool_preview(p)
         if self._cursor is not None and not self._panning:
             self._draw_crosshair(p, self._cursor)
         p.end()
@@ -393,6 +395,41 @@ class Viewport(QOpenGLWidget):
     # AutoSnap marker glyphs (classic yellow), drawn in logical pixels.
     MARKER_COLOR = QColor(255, 220, 0)
     MARKER_SIZE = 10
+    # Selection visuals (AutoCAD colors): dashed highlight, blue window,
+    # green crossing.
+    HIGHLIGHT_COLOR = QColor(60, 170, 255)
+    WINDOW_FILL = QColor(70, 130, 255, 50)
+    WINDOW_BORDER = QColor(90, 140, 255)
+    CROSSING_FILL = QColor(80, 220, 110, 50)
+    CROSSING_BORDER = QColor(90, 220, 120)
+
+    def _draw_selection(self, p: QPainter) -> None:
+        delegate = self.tool_delegate
+        segs, circles, boxes = delegate.highlight_geometry()
+        if len(segs) or len(circles) or len(boxes):
+            p.setPen(QPen(self.HIGHLIGHT_COLOR, 2, Qt.DashLine))
+            for s in segs[:4000]:
+                x1, y1 = self.view.world_to_screen(s[0], s[1])
+                x2, y2 = self.view.world_to_screen(s[2], s[3])
+                p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            for c in circles[:1000]:
+                x, y = self.view.world_to_screen(c[0], c[1])
+                r = c[2] * self.view.scale
+                p.drawEllipse(QPointF(x, y), r, r)
+            for b in boxes[:1000]:
+                x1, y1 = self.view.world_to_screen(b[0], b[3])
+                x2, y2 = self.view.world_to_screen(b[2], b[1])
+                p.drawRect(x1, y1, x2 - x1, y2 - y1)
+        rect_info = delegate.selection_rect()
+        if rect_info is not None:
+            (x0, y0, x1, y1), crossing = rect_info
+            sx1, sy1 = self.view.world_to_screen(x0, y1)
+            sx2, sy2 = self.view.world_to_screen(x1, y0)
+            fill = self.CROSSING_FILL if crossing else self.WINDOW_FILL
+            border = self.CROSSING_BORDER if crossing else self.WINDOW_BORDER
+            p.fillRect(sx1, sy1, sx2 - sx1, sy2 - sy1, fill)
+            p.setPen(QPen(border, 1, Qt.DashLine if crossing else Qt.SolidLine))
+            p.drawRect(sx1, sy1, sx2 - sx1, sy2 - sy1)
 
     def _draw_tool_preview(self, p: QPainter) -> None:
         delegate = self.tool_delegate
@@ -491,11 +528,11 @@ class Viewport(QOpenGLWidget):
             self.setCursor(Qt.ClosedHandCursor)
             self.update()
             return
-        if (event.button() == Qt.LeftButton and self.tool_delegate is not None
-                and self.tool_delegate.active()):
+        if event.button() == Qt.LeftButton and self.tool_delegate is not None:
             pos = event.position()
             wx, wy = self.view.screen_to_world(pos.x(), pos.y())
-            self.tool_delegate.on_click(wx, wy)
+            shift = bool(event.modifiers() & Qt.ShiftModifier)
+            self.tool_delegate.on_click(wx, wy, shift)
             self.update()
             return
         super().mousePressEvent(event)
@@ -537,7 +574,7 @@ class Viewport(QOpenGLWidget):
         else:
             self._cursor = pos
             wx, wy = self.view.screen_to_world(pos.x(), pos.y())
-            if self.tool_delegate is not None and self.tool_delegate.active():
+            if self.tool_delegate is not None:
                 from views.tool_controller import SNAP_PX
 
                 self.tool_delegate.on_hover(wx, wy, SNAP_PX / self.view.scale)
