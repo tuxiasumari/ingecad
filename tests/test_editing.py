@@ -297,6 +297,22 @@ def test_trim_polyline_self_crossing_tails():
     assert pts[0] == (-2.0, 0.0) and pts[-1] == (0.0, -3.0)
 
 
+def test_trim_polyline_by_crossing_window():
+    # The general gesture: a crossing rect over the polyline tail trims it.
+    h = Harness()
+    h.msp.add_lwpolyline(
+        [(-2.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, -3.0)])
+    tool = TrimTool(h.ctx)
+    tool.start()
+    tool.on_selection([])
+    # crossing rect around the left tail (x in [-2, 0])
+    pl = h.msp.query("LWPOLYLINE")[0]
+    tool.on_target_entities([pl], (-1.8, -0.5, -0.5, 0.5))
+    pts = [(round(x, 6), round(y, 6))
+           for x, y in h.msp.query("LWPOLYLINE")[0].get_points("xy")]
+    assert pts[0] == (0.0, 0.0)
+
+
 def test_trim_closed_polyline_opens_ring():
     h = Harness()
     h.msp.add_lwpolyline([(0, 0), (10, 0), (10, 10), (0, 10)], close=True)

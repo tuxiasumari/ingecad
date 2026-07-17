@@ -587,6 +587,20 @@ def _point_on_entity_near(entity, target: Point):
                 ang = a0 if rel - (a1 - a0) > (math.tau - rel) else a1
         r = entity.dxf.radius
         return (c.x + r * math.cos(ang), c.y + r * math.sin(ang))
+    if t == "LWPOLYLINE":
+        pts = entity.get_points("xy")
+        pairs = list(zip(pts, pts[1:]))
+        if entity.closed and len(pts) > 2:
+            pairs.append((pts[-1], pts[0]))
+        best = None
+        for a, b in pairs:
+            seg = (a[0], a[1], b[0], b[1])
+            u = _param_on_segment(seg, target)
+            q = (seg[0] + u * (seg[2] - seg[0]), seg[1] + u * (seg[3] - seg[1]))
+            d = math.hypot(q[0] - target[0], q[1] - target[1])
+            if best is None or d < best[0]:
+                best = (d, q)
+        return best[1] if best else None
     return None
 
 
