@@ -17,7 +17,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from core import actions
 from core.coords import CoordinateError, parse_point
 from core.i18n import tr
-from core.select import GeometryIndex
+from core.select import GeometryIndex, apply_grip_edit, entity_grips
 from core.snap import SnapEngine, SnapHit
 from render.backend import _flatten_distance, build_scene_for_entities
 from tools.base import Tool, ToolContext
@@ -54,6 +54,8 @@ class ToolController(QObject):
         # Edits render instantly via the overlay; the expensive base-scene
         # regen is coalesced so a burst of trims pays it once.
         self._pending_render: list = []
+        # Grip drag state: (handle, grip_index, role, SnapshotCommand).
+        self._grip_drag = None
         self._regen_timer = QTimer(self)
         self._regen_timer.setSingleShot(True)
         self._regen_timer.setInterval(400)
@@ -222,8 +224,16 @@ class ToolController(QObject):
         if isinstance(command, actions.AddEntityCommand):
             self._refresh_overlay()
         else:
-            # show the results NOW through the overlay; defer the full regen
-            # (the old geometry ghosts in the base scene for <1 burst)
+            # hide the OLD geometry instantly (surgical, no regen) and show
+            # the results NOW through the overlay; the full regen is deferred
+            old_handles = []
+            if isinstance(command, (actions.EraseCommand,
+                                    actions.TransformCommand)):
+                old_handles = [e.dxf.handle for e in command.entities]
+            elif isinstance(command, actions.ReplaceEntitiesCommand):
+                old_handles = [e.dxf.handle for e in command.old_entities]
+            if old_handles:
+                self.window.viewport.hide_handles(old_handles)
             for attr in ("new_entities", "copies", "entities"):
                 extra = getattr(command, attr, None)
                 if extra:
@@ -274,6 +284,7 @@ class ToolController(QObject):
         ]
         entities += [e for e in self._pending_render
                      if e.is_alive and e.dxf.handle not in self._base_handles]
+        entities += self.grip_overlay_entities()
         scene = (build_scene_for_entities(document, entities, self._flatten)
                  if entities else None)
         self.window.viewport.set_overlay_scene(scene)
@@ -455,6 +466,68 @@ class ToolController(QObject):
         if self.tool is None or self._cursor is None:
             return []
         return self.tool.preview_segments(self.resolved_point(*self._cursor))
+
+    # -- grips (selected-entity editing points) --------------------------------
+    def grip_points(self):
+        """[(x, y, role, handle, index)] for the current idle selection."""
+        if self.tool is not None or not self.selection or self.index is None:
+            return []
+        out = []
+        for h in list(self.selection)[:200]:   # cap: grips get noisy past that
+            e = self.index.entity(h)
+            if e is None or not e.is_alive:
+                continue
+            for i, (x, y, role) in enumerate(entity_grips(e)):
+                out.append((x, y, role, h, i))
+        return out
+
+    def grip_at(self, wx: float, wy: float, tol: float):
+        for x, y, role, h, i in self.grip_points():
+            if abs(x - wx) <= tol and abs(y - wy) <= tol:
+                return (x, y, role, h, i)
+        return None
+
+    def begin_grip_drag(self, grip) -> None:
+        from core.actions import SnapshotCommand
+
+        _x, _y, role, handle, index = grip
+        entity = self.index.entity(handle)
+        if entity is None:
+            return
+        self._grip_drag = (handle, index, role, SnapshotCommand([entity]))
+
+    def update_grip_drag(self, wx: float, wy: float) -> None:
+        if self._grip_drag is None:
+            return
+        handle, index, role, _snap = self._grip_drag
+        entity = self.index.entity(handle)
+        if entity is not None:
+            apply_grip_edit(entity, index, role, (wx, wy))
+            self._invalidate_geometry()
+            self.window.viewport.hide_handles([handle])
+            self._refresh_overlay()
+
+    def finish_grip_drag(self, wx: float, wy: float) -> None:
+        if self._grip_drag is None:
+            return
+        handle, index, role, snap = self._grip_drag
+        self._grip_drag = None
+        entity = self.index.entity(handle)
+        if entity is not None:
+            apply_grip_edit(entity, index, role, (wx, wy))
+            snap.commit(self.window.document)
+            self.window.history._undo.append(snap)
+            self.window.history._redo.clear()
+            self._invalidate_geometry()
+            self.window.viewport.hide_handles([handle])
+            self._refresh_overlay()
+            self._regen_timer.start()
+
+    def grip_overlay_entities(self):
+        if self._grip_drag is None:
+            return []
+        entity = self.index.entity(self._grip_drag[0])
+        return [entity] if entity is not None and entity.is_alive else []
 
     def highlight_geometry(self):
         """(segments, circles, boxes) of the current selection, world coords."""

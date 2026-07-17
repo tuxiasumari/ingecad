@@ -245,3 +245,111 @@ def _circle_intersects_rect(c, x0, y0, x1, y1) -> bool:
     if corners_in and not center_in:
         return False
     return True
+
+
+def entity_grips(entity) -> list[tuple[float, float, str]]:
+    """Grip points of an entity: (x, y, role).
+
+    Roles drive editing: 'end'/'mid'/'vertex' move that point, 'center'
+    moves the whole entity, 'radius'/'quadrant' resize. Mirrors AutoCAD's
+    grip set for the supported types.
+    """
+    import math
+
+    t = entity.dxftype()
+    grips: list[tuple[float, float, str]] = []
+    if t == "LINE":
+        s, e = entity.dxf.start, entity.dxf.end
+        grips.append((s.x, s.y, "end"))
+        grips.append(((s.x + e.x) / 2, (s.y + e.y) / 2, "mid"))
+        grips.append((e.x, e.y, "end"))
+    elif t == "LWPOLYLINE":
+        pts = entity.get_points("xy")
+        for x, y in pts:
+            grips.append((x, y, "vertex"))
+        pairs = list(zip(pts, pts[1:]))
+        if entity.closed and len(pts) > 2:
+            pairs.append((pts[-1], pts[0]))
+        for a, b in pairs:
+            grips.append(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, "mid"))
+    elif t == "CIRCLE":
+        c, r = entity.dxf.center, entity.dxf.radius
+        grips.append((c.x, c.y, "center"))
+        for ang in (0, 90, 180, 270):
+            grips.append((c.x + r * math.cos(math.radians(ang)),
+                          c.y + r * math.sin(math.radians(ang)), "quadrant"))
+    elif t == "ARC":
+        c, r = entity.dxf.center, entity.dxf.radius
+        grips.append((c.x, c.y, "center"))
+        for a in (entity.dxf.start_angle, entity.dxf.end_angle):
+            grips.append((c.x + r * math.cos(math.radians(a)),
+                          c.y + r * math.sin(math.radians(a)), "end"))
+        mid = math.radians((entity.dxf.start_angle + entity.dxf.end_angle) / 2)
+        grips.append((c.x + r * math.cos(mid), c.y + r * math.sin(mid), "mid"))
+    elif t == "POINT":
+        l = entity.dxf.location
+        grips.append((l.x, l.y, "center"))
+    return grips
+
+
+def apply_grip_edit(entity, grip_index: int, role: str, new_point):
+    """Move the grip at ``grip_index`` to ``new_point``, editing the entity
+    in place. Returns True on success (undo is handled by the caller through
+    a snapshot Command)."""
+    import math
+
+    t = entity.dxftype()
+    nx, ny = new_point
+    if t == "LINE":
+        if role == "mid":               # move whole line
+            s, e = entity.dxf.start, entity.dxf.end
+            dx = nx - (s.x + e.x) / 2
+            dy = ny - (s.y + e.y) / 2
+            entity.dxf.start = (s.x + dx, s.y + dy, 0)
+            entity.dxf.end = (e.x + dx, e.y + dy, 0)
+        elif grip_index == 0:
+            entity.dxf.start = (nx, ny, 0)
+        else:
+            entity.dxf.end = (nx, ny, 0)
+        return True
+    if t == "LWPOLYLINE":
+        pts = entity.get_points("xyseb")
+        n = len(pts)
+        if role == "vertex" and grip_index < n:
+            p = list(pts[grip_index])
+            p[0], p[1] = nx, ny
+            pts[grip_index] = tuple(p)
+            entity.set_points(pts, format="xyseb")
+            return True
+        if role == "mid":               # insert a vertex at the midpoint grip
+            seg = grip_index - n
+            insert_at = seg + 1
+            new = (nx, ny, 0.0, 0.0, 0.0)
+            pts.insert(insert_at, new)
+            entity.set_points(pts, format="xyseb")
+            return True
+        return False
+    if t == "CIRCLE":
+        if role == "center":
+            entity.dxf.center = (nx, ny, 0)
+        else:                            # quadrant: new radius
+            c = entity.dxf.center
+            entity.dxf.radius = max(1e-9, math.hypot(nx - c.x, ny - c.y))
+        return True
+    if t == "ARC":
+        c = entity.dxf.center
+        if role == "center":
+            entity.dxf.center = (nx, ny, 0)
+        elif role == "mid":              # new radius, angles kept
+            entity.dxf.radius = max(1e-9, math.hypot(nx - c.x, ny - c.y))
+        else:                            # end grip: move that angle
+            ang = math.degrees(math.atan2(ny - c.y, nx - c.x))
+            if grip_index == 1:
+                entity.dxf.start_angle = ang
+            else:
+                entity.dxf.end_angle = ang
+        return True
+    if t == "POINT":
+        entity.dxf.location = (nx, ny, 0)
+        return True
+    return False

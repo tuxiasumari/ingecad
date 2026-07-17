@@ -63,15 +63,18 @@ class VertexBackend(Backend):
         self.buckets: dict[tuple, Bucket] = {}
         self._flatten = flatten_distance
         self._kind = ""
+        self._handle = None
         self.background: str | None = None
 
     def enter_entity(self, entity, properties) -> None:
         super().enter_entity(entity, properties)
         self._kind = "T" if entity.dxftype() in _TEXT_TYPES else ""
+        self._handle = getattr(entity.dxf, "handle", None)
 
     def exit_entity(self, entity) -> None:
         super().exit_entity(entity)
         self._kind = ""
+        self._handle = None
 
     def _bucket(self, properties: BackendProperties) -> Bucket:
         key = (properties.layer, properties.color, properties.lineweight,
@@ -86,24 +89,30 @@ class VertexBackend(Backend):
 
     # -- primitives -----------------------------------------------------------
     def draw_point(self, pos: Vec2, properties: BackendProperties) -> None:
-        self._bucket(properties).points.extend((pos.x, pos.y))
+        b = self._bucket(properties)
+        b.points.extend((pos.x, pos.y))
+        b.points_owner.append(self._handle)
 
     def draw_line(self, start: Vec2, end: Vec2, properties: BackendProperties) -> None:
-        self._bucket(properties).lines.extend((start.x, start.y, end.x, end.y))
+        b = self._bucket(properties)
+        b.lines.extend((start.x, start.y, end.x, end.y))
+        b.lines_owner.append(self._handle)
 
     def draw_solid_lines(
         self, lines: Iterable[tuple[Vec2, Vec2]], properties: BackendProperties
     ) -> None:
-        out = self._bucket(properties).lines
+        b = self._bucket(properties)
         for start, end in lines:
-            out.extend((start.x, start.y, end.x, end.y))
+            b.lines.extend((start.x, start.y, end.x, end.y))
+            b.lines_owner.append(self._handle)
 
     def draw_path(self, path: BkPath2d, properties: BackendProperties) -> None:
-        out = self._bucket(properties).lines
+        b = self._bucket(properties)
         prev: Vec2 | None = None
         for v in path.flattening(self._flatten):
             if prev is not None:
-                out.extend((prev.x, prev.y, v.x, v.y))
+                b.lines.extend((prev.x, prev.y, v.x, v.y))
+                b.lines_owner.append(self._handle)
             prev = v
 
     def draw_filled_polygon(
@@ -143,9 +152,10 @@ class VertexBackend(Backend):
             triangles = mapbox_earcut_2d(exterior, holes or None)
         except (ValueError, ZeroDivisionError):
             return  # degenerate ring: drop the fill, keep going
-        out = self._bucket(properties).triangles
+        bucket = self._bucket(properties)
         for a, b, c in triangles:
-            out.extend((a.x, a.y, b.x, b.y, c.x, c.y))
+            bucket.triangles.extend((a.x, a.y, b.x, b.y, c.x, c.y))
+            bucket.triangles_owner.append(self._handle)
 
     def draw_image(self, image_data, properties: BackendProperties) -> None:
         pass  # raster underlays: out of F1 scope

@@ -368,3 +368,46 @@ def copy_entities(entities, dx: float, dy: float) -> CopyEntitiesCommand:
     from ezdxf.math import Matrix44
 
     return CopyEntitiesCommand(entities, Matrix44.translate(dx, dy, 0.0))
+
+
+class SnapshotCommand(Command):
+    """Undo via full DXF-tag snapshots of the edited entities.
+
+    Grip edits mutate entities in place through many small setters; capturing
+    a before/after tag copy is the simplest exact-undo route (the entity keeps
+    its handle, so the round-trip stays conservative).
+    """
+
+    name = "GRIP"
+
+    def __init__(self, entities) -> None:
+        self.entities = list(entities)
+        self._before = [e.copy() for e in entities]
+        self._after = None
+
+    def commit(self, document) -> None:
+        """Call after the in-place edit; captures the 'after' state."""
+        self._after = [e.copy() for e in self.entities]
+        document.dirty = True
+
+    def do(self, document) -> None:
+        if self._after is None:
+            return  # first application already happened in place
+        for e, snap in zip(self.entities, self._after):
+            _restore_entity(e, snap)
+        document.dirty = True
+
+    def undo(self, document) -> None:
+        for e, snap in zip(self.entities, self._before):
+            _restore_entity(e, snap)
+        document.dirty = True
+
+
+def _restore_entity(entity, snapshot) -> None:
+    """Copy snapshot's DXF attributes back onto entity (keeps its handle)."""
+    for key, value in snapshot.dxf.all_existing_dxf_attribs().items():
+        if key == "handle":
+            continue
+        entity.dxf.set(key, value)
+    if entity.dxftype() == "LWPOLYLINE":
+        entity.set_points(snapshot.get_points("xyseb"), format="xyseb")

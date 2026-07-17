@@ -405,3 +405,53 @@ def test_offset_tool_line():
     tool.on_point((50, 30))        # side: above
     news = [l for l in h.msp.query("LINE") if l.dxf.start.y != 0]
     assert len(news) == 1 and news[0].dxf.start.y == pytest.approx(5.0)
+
+
+# -- grips ---------------------------------------------------------------------
+
+def test_grip_geometry_and_edits():
+    from core.select import apply_grip_edit, entity_grips
+
+    doc = Document(ezdxf.new("R2018"))
+    msp = doc.modelspace()
+
+    line = msp.add_line((0, 0), (10, 0))
+    grips = entity_grips(line)
+    assert [(round(x), round(y), r) for x, y, r in grips] == [
+        (0, 0, "end"), (5, 0, "mid"), (10, 0, "end")]
+    apply_grip_edit(line, 2, "end", (10, 5))
+    assert tuple(line.dxf.end)[:2] == (10.0, 5.0)
+    apply_grip_edit(line, 1, "mid", (100, 100))   # mid moves whole line
+    assert line.dxf.start.x == pytest.approx(95.0)
+
+    circle = msp.add_circle((0, 0), 5)
+    g = entity_grips(circle)
+    assert g[0][2] == "center" and len(g) == 5
+    apply_grip_edit(circle, 1, "quadrant", (8, 0))
+    assert circle.dxf.radius == pytest.approx(8.0)
+    apply_grip_edit(circle, 0, "center", (3, 3))
+    assert circle.dxf.center.x == pytest.approx(3.0)
+
+    pl = msp.add_lwpolyline([(0, 0), (10, 0), (10, 10)])
+    apply_grip_edit(pl, 1, "vertex", (12, 3))
+    pts = [(round(p[0]), round(p[1])) for p in pl.get_points("xy")]
+    assert pts[1] == (12, 3)
+
+
+def test_grip_edit_undo_via_snapshot():
+    from core.actions import SnapshotCommand
+    from core.select import apply_grip_edit
+
+    doc = Document(ezdxf.new("R2018"))
+    line = doc.modelspace().add_line((0, 0), (10, 0))
+    history = History(doc)
+
+    snap = SnapshotCommand([line])
+    apply_grip_edit(line, 2, "end", (10, 8))
+    snap.commit(doc)
+    history._undo.append(snap)
+    assert tuple(line.dxf.end)[:2] == (10.0, 8.0)
+    history.undo()
+    assert tuple(line.dxf.end)[:2] == (10.0, 0.0)
+    history.redo()
+    assert tuple(line.dxf.end)[:2] == (10.0, 8.0)

@@ -67,6 +67,13 @@ class Bucket:
     lines: list[float] = field(default_factory=list)      # x,y per endpoint
     triangles: list[float] = field(default_factory=list)  # x,y per corner
     points: list[float] = field(default_factory=list)     # x,y per point
+    # Owner handle per PRIMITIVE (one entry per line/triangle/point). Survives
+    # the grid sort and lets pack() build a handle -> vertex-runs map so the
+    # viewport can hide an edited entity instantly, without a regen (the
+    # surgical-display building block).
+    lines_owner: list = field(default_factory=list)
+    triangles_owner: list = field(default_factory=list)
+    points_owner: list = field(default_factory=list)
     text_height_sum: float = 0.0                          # glyph extents, world
     text_count: int = 0
 
@@ -161,6 +168,10 @@ class Scene:
     background: Optional[tuple[float, float, float, float]] = None
     # Flattening distance used for the build (reused by overlay regens).
     flatten: float = 0.01
+    # handle -> [(batch_name, first_vertex, count)] for surgical hiding.
+    handle_ranges: dict = field(default_factory=dict)
+    # Handles currently hidden (edited entities awaiting the next regen).
+    hidden: set = field(default_factory=set)
 
     @property
     def is_empty(self) -> bool:
@@ -186,6 +197,7 @@ def _grid_cells(prims_xy: np.ndarray, extents, verts_per_prim: int) -> np.ndarra
 def _pack_standard(
     buckets: list[Bucket], attr: str, verts_per_prim: int,
     origin: tuple[float, float], extents,
+    batch_name: str = "", handle_ranges: Optional[dict] = None,
 ) -> Batch:
     ox, oy = origin
     chunks: list[np.ndarray] = []
@@ -214,6 +226,23 @@ def _pack_standard(
         verts["pos"][:, 1] = flat[:, 1] - oy
         verts["rgba"] = _color_u8(bucket.color)
         chunks.append(verts)
+
+        # Record which vertex runs belong to each entity handle (for the
+        # viewport's surgical hide). Owners follow the same grid permutation.
+        owners = getattr(bucket, attr + "_owner")
+        if owners and handle_ranges is not None:
+            owner_arr = np.asarray(owners, dtype=object)[order.tolist()]
+            i = 0
+            while i < n_prims:
+                h = owner_arr[i]
+                j = i
+                while j < n_prims and owner_arr[j] == h:
+                    j += 1
+                if h is not None:
+                    handle_ranges.setdefault(h, []).append(
+                        (batch_name, first + i * verts_per_prim,
+                         (j - i) * verts_per_prim))
+                i = j
 
         # One range per occupied cell.
         cell_breaks = np.nonzero(cells[1:] != cells[:-1])[0] + 1
@@ -325,11 +354,15 @@ def pack(buckets: dict[tuple, Bucket]) -> Scene:
     ordered = [buckets[k] for k in sorted(buckets)]
     extents = _world_extents(ordered)
     origin = ((extents[0] + extents[2]) / 2.0, (extents[1] + extents[3]) / 2.0)
-    return Scene(
+    hr: dict = {}
+    scene = Scene(
         origin=origin,
         extents=extents,
-        lines=_pack_standard(ordered, "lines", 2, origin, extents),
+        lines=_pack_standard(ordered, "lines", 2, origin, extents, "lines", hr),
         thick=_pack_thick(ordered, origin, extents),
-        triangles=_pack_standard(ordered, "triangles", 3, origin, extents),
-        points=_pack_standard(ordered, "points", 1, origin, extents),
+        triangles=_pack_standard(ordered, "triangles", 3, origin, extents,
+                                 "triangles", hr),
+        points=_pack_standard(ordered, "points", 1, origin, extents, "points", hr),
     )
+    scene.handle_ranges = hr
+    return scene

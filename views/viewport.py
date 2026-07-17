@@ -36,6 +36,8 @@ from render.view import ViewTransform2D
 # OpenGL constants — kept as literals so we don't depend on PyOpenGL.
 GL_FLOAT = 0x1406
 GL_UNSIGNED_BYTE = 0x1401
+
+GRIP_PICK_PX = 7.0  # grip hit aperture, logical pixels
 GL_POINTS = 0x0000
 GL_LINES = 0x0001
 GL_TRIANGLES = 0x0004
@@ -100,6 +102,7 @@ class Viewport(QOpenGLWidget):
         self._overlay_dirty = False
         self._overlay_bufs: dict[str, tuple] = {}
         self._sel_press = None  # pending left press in selection mode
+        self._grip_hover = None  # grip under the cursor, if any
         # Interactive tool hook (ToolController): hover/click/preview/markers.
         self.tool_delegate = None
 
@@ -115,6 +118,25 @@ class Viewport(QOpenGLWidget):
         self._overlay_scene = scene
         self._overlay_dirty = True
         self.update()
+
+    def hide_handles(self, handles) -> None:
+        """Make edited entities vanish instantly (alpha 0), no regen.
+
+        The next full regen rebuilds the base scene without them; until then
+        this hides their vertices in the existing buffers — a few KB of GPU
+        update instead of seconds of regen (surgical display).
+        """
+        if self._scene is None or not self._scene.handle_ranges:
+            return
+        touched = False
+        for h in handles:
+            for batch_name, first, count in self._scene.handle_ranges.get(h, ()):
+                getattr(self._scene, batch_name).data["rgba"][
+                    first:first + count, 3] = 0
+                touched = True
+        if touched:
+            self._scene_dirty = True   # re-upload the mutated buffers
+            self.update()
 
     # -- view stack (ZOOM Previous) -------------------------------------------
     def push_view(self) -> None:
@@ -387,6 +409,7 @@ class Viewport(QOpenGLWidget):
         self._draw_ucs_icon(p)
         if self.tool_delegate is not None:
             self._draw_selection(p)
+            self._draw_grips(p)
             if self.tool_delegate.active():
                 self._draw_tool_preview(p)
         if self._cursor is not None and not self._panning:
@@ -403,6 +426,27 @@ class Viewport(QOpenGLWidget):
     WINDOW_BORDER = QColor(90, 140, 255)
     CROSSING_FILL = QColor(80, 220, 110, 50)
     CROSSING_BORDER = QColor(90, 220, 120)
+
+    GRIP_COLOR = QColor(0, 170, 90)          # classic AutoCAD grip blue-green
+    GRIP_HOVER = QColor(255, 90, 90)
+    GRIP_SIZE = 8
+
+    def _draw_grips(self, p: QPainter) -> None:
+        grips = self.tool_delegate.grip_points()
+        if not grips:
+            return
+        s = self.GRIP_SIZE / 2.0
+        hovered = self._grip_hover
+        for x, y, role, h, i in grips:
+            sx, sy = self.view.world_to_screen(x, y)
+            is_hot = hovered is not None and hovered[3] == h and hovered[4] == i
+            p.setPen(QPen(self.GRIP_HOVER if is_hot else self.GRIP_COLOR, 1))
+            p.setBrush(self.GRIP_HOVER if is_hot else self.GRIP_COLOR)
+            if role in ("center", "mid"):
+                p.drawEllipse(QPointF(sx, sy), s, s)   # round: move/insert
+            else:
+                p.drawRect(sx - s, sy - s, 2 * s, 2 * s)  # square: endpoints
+        p.setBrush(Qt.NoBrush)
 
     def _draw_selection(self, p: QPainter) -> None:
         delegate = self.tool_delegate
@@ -542,6 +586,13 @@ class Viewport(QOpenGLWidget):
             pos = event.position()
             wx, wy = self.view.screen_to_world(pos.x(), pos.y())
             shift = bool(event.modifiers() & Qt.ShiftModifier)
+            if self.tool_delegate.in_selection_mode():
+                grip = self.tool_delegate.grip_at(
+                    wx, wy, GRIP_PICK_PX / self.view.scale)
+                if grip is not None:
+                    self.tool_delegate.begin_grip_drag(grip)
+                    self.update()
+                    return
             if self.tool_delegate.wants_drag_rect():
                 # defer to release: a drag becomes a window, a click a pick
                 self._sel_press = (pos, (wx, wy), shift)
@@ -572,6 +623,13 @@ class Viewport(QOpenGLWidget):
             self.setCursor(Qt.BlankCursor)
             self.update()
             return
+        if (event.button() == Qt.LeftButton and self.tool_delegate is not None
+                and self.tool_delegate._grip_drag is not None):
+            pos = event.position()
+            wx, wy = self.view.screen_to_world(pos.x(), pos.y())
+            self.tool_delegate.finish_grip_drag(wx, wy)
+            self.update()
+            return
         if (event.button() == Qt.LeftButton and self._sel_press is not None
                 and self.tool_delegate is not None):
             press_pos, press_world, shift = self._sel_press
@@ -597,6 +655,14 @@ class Viewport(QOpenGLWidget):
             self._rubber.setGeometry(int(min(x0, pos.x())), int(min(y0, pos.y())),
                                      int(abs(pos.x() - x0)), int(abs(pos.y() - y0)))
             return
+        if (self.tool_delegate is not None
+                and self.tool_delegate._grip_drag is not None):
+            self._cursor = pos
+            wx, wy = self.view.screen_to_world(pos.x(), pos.y())
+            self.tool_delegate.update_grip_drag(wx, wy)
+            self.cursorMoved.emit(wx, wy)
+            self.update()
+            return
         if self._panning:
             delta = pos - self._last_pos
             self._last_pos = pos
@@ -605,6 +671,8 @@ class Viewport(QOpenGLWidget):
             self._cursor = pos
             wx, wy = self.view.screen_to_world(pos.x(), pos.y())
             if self.tool_delegate is not None:
+                self._grip_hover = self.tool_delegate.grip_at(
+                    wx, wy, GRIP_PICK_PX / self.view.scale)
                 from views.tool_controller import SNAP_PX
 
                 if (self._sel_press is not None
