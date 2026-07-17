@@ -7,12 +7,15 @@ the real-file bench and are applied on top of the **0.14** release tarball.
 | Patch | Status upstream |
 |---|---|
 | `0001-dxf-fix-null-deref-PROXY_ENTITY.patch` | Backport of upstream `af67061c` (fixed after 0.14) — SIGSEGV writing partially decoded PROXY_ENTITYs |
-| `0002-dxf-hex-encode-binary-TF-chunks.patch` | **Ours, still broken in master** — `proxy_data` (group 310) written as raw bytes instead of hex; to be submitted upstream |
+| `0002-dxf-hex-encode-binary-TF-chunks.patch` | Ours — `proxy_data` (group 310) written as raw bytes instead of hex; submitted as [LibreDWG#1311](https://github.com/LibreDWG/libredwg/pull/1311) |
+| `0003-dxf-import-dynamic-block-objects.patch` | Ours — four dxf2dwg import fixes (EVALUATION_GRAPH, BLOCKSTRETCHACTION SEGV, EVAL_Edge heap overflow, FIELD childval); submitted as [LibreDWG#1312](https://github.com/LibreDWG/libredwg/pull/1312) |
 
-Both were found with the same file: a 27 MB r2013 cadastre DWG whose
-ACAD_PROXY_ENTITYs decode partially (AcDs segments). Before the patches the
-conversion segfaulted mid-write; after them the drawing opens fully
-(92k entities).
+0001/0002 were found with a 27 MB r2013 cadastre DWG whose
+ACAD_PROXY_ENTITYs decode partially (AcDs segments): the conversion
+segfaulted mid-write; with the patches the drawing opens fully (92k
+entities). 0003 came from a 4.5 MB AutoCAD 2018 pavement plan with dynamic
+blocks that dxf2dwg could not import at all; with it, "save as DWG r2000"
+of that plan works end-to-end.
 
 ## Rebuilding vendor/libredwg
 

@@ -177,6 +177,29 @@ def _flatten_distance(document: Document) -> float:
     return max(diagonal * FLATTEN_REL, MIN_FLATTEN)
 
 
+class TolerantRenderContext(RenderContext):
+    """Property resolution that survives malformed entities.
+
+    resolve_all runs before draw_entity, outside the frontend's per-entity
+    guard: a HATCH with pattern_scale 0 (seen after a LibreDWG roundtrip)
+    raises ZeroDivisionError there and would blank the whole drawing. Fall
+    back to plain defaults for that entity and keep drawing.
+    """
+
+    def resolve_all(self, entity):
+        try:
+            return super().resolve_all(entity)
+        except Exception as exc:
+            handle = getattr(entity.dxf, "handle", None) or "?"
+            logger.warning(
+                "default properties for %s(#%s): %s",
+                entity.dxftype(), handle, exc,
+            )
+            from ezdxf.addons.drawing.properties import Properties
+
+            return Properties()
+
+
 class TolerantFrontend(Frontend):
     """Frontend that survives malformed entities.
 
@@ -212,7 +235,7 @@ def build_scene(document: Document) -> Scene:
     """Run the ezdxf frontend over modelspace and pack the result ("regen")."""
     flatten = _flatten_distance(document)
     backend = VertexBackend(flatten)
-    context = RenderContext(document.doc)
+    context = TolerantRenderContext(document.doc)
     frontend = TolerantFrontend(context, backend, frontend_config(flatten))
     frontend.draw_layout(document.modelspace())
     scene = pack(backend.buckets)
