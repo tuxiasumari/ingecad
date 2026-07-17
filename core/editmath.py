@@ -177,6 +177,77 @@ def trim_arc(center: Point, r: float, a_start: float, a_end: float,
     return out
 
 
+def trim_polyline(points: list[Point], closed: bool, pick_point: Point,
+                  cutters: list[Seg],
+                  circles: list[tuple[Point, float]]):
+    """Trim the picked span of a straight-segment polyline.
+
+    The polyline's OWN other segments also act as cutting edges (AutoCAD
+    self-trim: the crossing tails of a sketch trim against the shape).
+    Returns a list of vertex chains (0, 1 or 2 polylines) or None when no
+    edge crosses the picked segment.
+    """
+    n = len(points)
+    if n < 2:
+        return None
+    seg_count = n if closed else n - 1
+    segs = [(points[i][0], points[i][1],
+             points[(i + 1) % n][0], points[(i + 1) % n][1])
+            for i in range(seg_count)]
+
+    # picked segment: closest to the pick point
+    def dist2(seg: Seg) -> float:
+        x1, y1, x2, y2 = seg
+        dx, dy = x2 - x1, y2 - y1
+        L2 = dx * dx + dy * dy
+        t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((pick_point[0] - x1) * dx
+                                                   + (pick_point[1] - y1) * dy) / L2))
+        qx, qy = x1 + t * dx, y1 + t * dy
+        return (pick_point[0] - qx) ** 2 + (pick_point[1] - qy) ** 2
+
+    k = min(range(seg_count), key=lambda i: dist2(segs[i]))
+    seg_k = segs[k]
+    dx, dy = seg_k[2] - seg_k[0], seg_k[3] - seg_k[1]
+    L2 = dx * dx + dy * dy
+    pick_t = 0.0 if L2 == 0 else max(0.0, min(1.0, (
+        (pick_point[0] - seg_k[0]) * dx + (pick_point[1] - seg_k[1]) * dy) / L2))
+
+    all_cutters = list(cutters) + [s for i, s in enumerate(segs) if i != k]
+    pieces = trim_segment(seg_k, all_cutters, circles, pick_t)
+    if pieces is None:
+        return None
+    piece1 = next((p for p in pieces
+                   if (p[0], p[1]) == (seg_k[0], seg_k[1])), None)
+    piece2 = next((p for p in pieces
+                   if (p[2], p[3]) == (seg_k[2], seg_k[3])), None)
+
+    chains: list[list[Point]] = []
+    if closed:
+        # the ring opens at the removed span: one chain from the trim end
+        # forward around to the trim start
+        idxs = [(k + 1 + i) % n for i in range(n)]
+        chain: list[Point] = []
+        if piece2 is not None:
+            chain.append((piece2[0], piece2[1]))
+        chain.extend(points[i] for i in idxs)
+        if piece1 is not None:
+            chain.append((piece1[2], piece1[3]))
+        if len(chain) >= 2:
+            chains.append(chain)
+    else:
+        chain_a: list[Point] = list(points[:k + 1])
+        if piece1 is not None:
+            chain_a.append((piece1[2], piece1[3]))
+        chain_b: list[Point] = []
+        if piece2 is not None:
+            chain_b.append((piece2[0], piece2[1]))
+        chain_b.extend(points[k + 1:])
+        for chain in (chain_a, chain_b):
+            if len(chain) >= 2:
+                chains.append(chain)
+    return chains
+
+
 # -- EXTEND --------------------------------------------------------------------
 
 def extend_segment(seg: Seg, edges: list[Seg],

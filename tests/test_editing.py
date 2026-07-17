@@ -268,6 +268,49 @@ def test_trim_circle_with_circle_edges():
     assert h.finished
 
 
+def test_trim_polyline_self_crossing_tails():
+    # The user's sketch: an open polyline whose last segment crosses the
+    # first one, leaving two tails at the corner. Both trim away using the
+    # polyline itself as the cutting edge.
+    h = Harness()
+    pl = h.msp.add_lwpolyline(
+        [(-2.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, -3.0)])
+    tool = TrimTool(h.ctx)
+    tool.start()
+    tool.on_selection([])          # all edges (self-trim included anyway)
+    tool.on_point((-1.0, 0.0))     # left tail of the first segment
+    pls = h.msp.query("LWPOLYLINE")
+    assert len(pls) == 1
+    pts = [(round(x, 6), round(y, 6)) for x, y in pls[0].get_points("xy")]
+    assert pts[0] == (0.0, 0.0)    # tail removed, starts at the crossing
+    # now the bottom tail of the (new) last segment
+    tool.on_point((0.0, -2.0))
+    pls = h.msp.query("LWPOLYLINE")
+    assert len(pls) == 1
+    pts = [(round(x, 6), round(y, 6)) for x, y in pls[0].get_points("xy")]
+    assert pts == [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)]
+    # undo restores the original polyline both times
+    h.history.undo()
+    h.history.undo()
+    pts = [(round(x, 6), round(y, 6))
+           for x, y in h.msp.query("LWPOLYLINE")[0].get_points("xy")]
+    assert pts[0] == (-2.0, 0.0) and pts[-1] == (0.0, -3.0)
+
+
+def test_trim_closed_polyline_opens_ring():
+    h = Harness()
+    h.msp.add_lwpolyline([(0, 0), (10, 0), (10, 10), (0, 10)], close=True)
+    h.msp.add_line((-5, 5), (15, 5))     # horizontal cutter
+    tool = TrimTool(h.ctx)
+    tool.start()
+    tool.on_selection([])
+    tool.on_point((0.0, 7.5))            # left side, above the cutter
+    pls = h.msp.query("LWPOLYLINE")
+    assert len(pls) == 1 and not pls[0].closed
+    ys = [round(y, 6) for _x, y in pls[0].get_points("xy")]
+    assert 5.0 in ys                     # the ring opened at the cutter
+
+
 def test_extend_tool_and_shift_flip():
     h = Harness()
     target = h.msp.add_line((0, 0), (40, 0))

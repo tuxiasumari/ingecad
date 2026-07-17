@@ -428,8 +428,24 @@ class _TrimExtendBase(Tool):
                 for s0, e0 in spans
             ]
             self._replace("TRIM", entity, factories)
+        elif t == "LWPOLYLINE":
+            pts = entity.get_points("xyb")
+            if any(abs(p[2]) > 1e-12 for p in pts):
+                self.ctx.echo(tr("Curved polyline segments not supported yet."))
+                return
+            chains = editmath.trim_polyline(
+                [(p[0], p[1]) for p in pts], entity.closed, point,
+                segs, circles)
+            if chains is None:
+                self.ctx.echo(tr("No cutting edge crosses it."))
+                return
+            factories = [
+                (lambda msp, c=chain: msp.add_lwpolyline(c))
+                for chain in chains
+            ]
+            self._replace("TRIM", entity, factories)
         else:
-            self.ctx.echo(tr("TRIM supports LINE, CIRCLE and ARC for now."))
+            self.ctx.echo(tr("TRIM supports LINE, PLINE, CIRCLE and ARC for now."))
 
     def _extend(self, entity, point, segs, circles) -> None:
         if entity.dxftype() != "LINE":
