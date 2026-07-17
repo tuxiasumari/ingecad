@@ -93,6 +93,28 @@ def test_frontend_config_caps_hatch_density():
     assert cfg.hatching_timeout == HATCHING_TIMEOUT
 
 
+def test_typed_alias_wins_over_inline_completion(qapp):
+    # "l" + Enter must run LINE via the alias — the inline suggestion (a
+    # trailing selection like "lAYER") must not hijack the submit.
+    from PySide6.QtTest import QTest
+    from PySide6.QtCore import Qt
+    from views.main_window import MainWindow
+
+    win = MainWindow()
+    win.show()
+    qapp.processEvents()
+    submitted = []
+    win.command_line.submitted.connect(submitted.append)
+
+    QTest.keyClicks(win.command_line.input, "l")
+    qapp.processEvents()
+    QTest.keyClick(win.command_line.input, Qt.Key_Return)
+    assert submitted and submitted[-1].strip().lower() == "l"
+    assert win.tools.active() and win.tools.tool.name == "LINE"
+    win.tools.cancel()
+    win.close()
+
+
 def test_zoom_extents_frames_placeholder_bounds(qapp):
     from views.main_window import MainWindow
 

@@ -45,13 +45,27 @@ class _PromptEdit(QLineEdit):
         self._history: list[str] = []
         self._cursor = 0
 
+    def _typed_text(self) -> str:
+        """The text the user actually typed, without the inline suggestion.
+
+        Muscle memory rules: "l" must run LINE (via the alias), not whatever
+        completion happens to be highlighted. The inline suggestion sits as
+        a trailing selection; strip it on execute (Tab/Right accept it).
+        """
+        text = self.text()
+        if self.hasSelectedText():
+            start = self.selectionStart()
+            if start + len(self.selectedText()) == len(text):
+                return text[:start]
+        return text
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
         key = event.key()
         if key in (Qt.Key_Return, Qt.Key_Enter) or (
             key == Qt.Key_Space and not self.text().endswith(" ")
             and self._space_executes()
         ):
-            text = self.text()
+            text = self._typed_text()
             if text.strip():
                 self._history.append(text.strip())
             self._cursor = len(self._history)
@@ -111,6 +125,9 @@ class CommandLine(QWidget):
     def set_completions(self, names: list[str]) -> None:
         completer = QCompleter(names, self.input)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
+        # Inline, not popup: a popup steals the first Enter (and can hijack
+        # "l" into "LA"), breaking the type-alias-hit-Enter muscle memory.
+        completer.setCompletionMode(QCompleter.InlineCompletion)
         self.input.setCompleter(completer)
 
     def echo(self, text: str) -> None:
