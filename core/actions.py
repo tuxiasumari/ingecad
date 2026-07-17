@@ -129,6 +129,11 @@ class AddEntityCommand(Command):
 
     def do(self, document) -> None:
         self.entity = self._factory(document.modelspace())
+        # New entities land on the current layer (AutoCAD/BricsCAD), with
+        # ByLayer color/linetype so they inherit the layer's appearance.
+        current = document.doc.header.get("$CLAYER", "0")
+        if current in document.doc.layers:
+            self.entity.dxf.layer = current
         document.dirty = True
 
     def undo(self, document) -> None:

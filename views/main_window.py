@@ -72,6 +72,8 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.document: Document | None = None
+        self._layers_dock = None
+        self._layers_panel = None
         self._open_thread: QThread | None = None
         self._open_worker: _OpenWorker | None = None
         self._opening_name = ""
@@ -179,6 +181,11 @@ class MainWindow(QMainWindow):
         extents_act.triggered.connect(self.viewport.zoom_extents)
         view_menu.addAction(extents_act)
 
+        format_menu = menu_bar.addMenu(tr("Format"))
+        layers_act = QAction(tr("Layers..."), self)
+        layers_act.triggered.connect(self.toggle_layers_panel)
+        format_menu.addAction(layers_act)
+
         tools_menu = menu_bar.addMenu(tr("Tools"))
         lang_menu = tools_menu.addMenu(tr("Language"))
         lang_group = QActionGroup(self)
@@ -278,7 +285,25 @@ class MainWindow(QMainWindow):
         self.document = Document.new()
         self.viewport.set_scene(None)
         self.tools.attach_document(self.document)
+        if self._layers_panel is not None:
+            self._layers_panel.refresh()
         self.setWindowTitle(f"IngeCAD — {tr('Untitled')}")
+
+    def toggle_layers_panel(self) -> None:
+        if self._layers_dock is None:
+            from views.layers_panel import LayersPanel
+
+            self._layers_panel = LayersPanel(self)
+            self._layers_panel.changed.connect(self.viewport.update)
+            dock = QDockWidget(tr("Layers"), self)
+            dock.setObjectName("layers_dock")
+            dock.setWidget(self._layers_panel)
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+            self._layers_dock = dock
+        else:
+            self._layers_dock.setVisible(not self._layers_dock.isVisible())
+        if self._layers_dock.isVisible():
+            self._layers_panel.refresh()
 
     def regen_in_memory(self) -> None:
         """Full regen of the in-memory document (edits included)."""
@@ -303,6 +328,7 @@ class MainWindow(QMainWindow):
         d.register("SAVEAS", lambda *a: self._save_as_dialog())
         d.register("QUIT", lambda *a: self.close())
         d.register("EXIT", lambda *a: self.close())
+        d.register("LAYER", lambda *a: self.toggle_layers_panel())
         # Phase 4 drawing + Phase 5 editing tools.
         for name in ("LINE", "CIRCLE", "ARC", "PLINE", "RECTANG", "POLYGON",
                      "ERASE", "MOVE", "COPY", "ROTATE", "SCALE", "MIRROR",
@@ -311,7 +337,7 @@ class MainWindow(QMainWindow):
         # In-scope commands that land in later phases: answer honestly.
         for name, phase in (
             ("DIST", 4), ("EXPLODE", 6),
-            ("BLOCK", 6), ("INSERT", 6), ("HATCH", 6), ("LAYER", 6),
+            ("BLOCK", 6), ("INSERT", 6), ("HATCH", 6),
             ("AREA", 7), ("LIST", 7),
         ):
             d.register_future(name, phase)
