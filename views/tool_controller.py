@@ -480,6 +480,11 @@ class ToolController(QObject):
     # -- grips (selected-entity editing points) --------------------------------
     def grip_points(self):
         """[(x, y, role, handle, index)] for the current idle selection."""
+        # While a grip is hot, hide the rest (AutoCAD/BricsCAD show only the
+        # moving grip); this also avoids flashing the new grips of a just-
+        # inserted vertex before the user drops it.
+        if self._grip_drag is not None:
+            return []
         if self.tool is not None or not self.selection or self.index is None:
             return []
         out = []

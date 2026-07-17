@@ -443,10 +443,13 @@ class Viewport(QOpenGLWidget):
             is_hot = hovered is not None and hovered[3] == h and hovered[4] == i
             p.setPen(QPen(self.GRIP_HOVER if is_hot else self.GRIP_COLOR, 1))
             p.setBrush(self.GRIP_HOVER if is_hot else self.GRIP_COLOR)
-            if role in ("center", "mid"):
-                p.drawEllipse(QPointF(sx, sy), s, s)   # round: move/insert
+            if role == "mid":                          # triangle: add/stretch
+                p.drawPolygon([QPointF(sx, sy - s), QPointF(sx - s, sy + s),
+                               QPointF(sx + s, sy + s)])
+            elif role == "center":
+                p.drawEllipse(QPointF(sx, sy), s, s)   # round: move whole
             else:
-                p.drawRect(sx - s, sy - s, 2 * s, 2 * s)  # square: endpoints
+                p.drawRect(sx - s, sy - s, 2 * s, 2 * s)  # square: vertices/ends
         p.setBrush(Qt.NoBrush)
 
     def _draw_selection(self, p: QPainter) -> None:
