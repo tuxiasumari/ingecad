@@ -11,7 +11,8 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from PySide6.QtCore import QObject, Signal
+import numpy as np
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from core import actions
 from core.coords import CoordinateError, parse_point
@@ -50,6 +51,13 @@ class ToolController(QObject):
         self._selecting_for: Optional[Tool] = None
         self._window_anchor: Optional[tuple[float, float]] = None
         self._pick_tolerance = 1.0  # world units, refreshed on hover
+        # Edits render instantly via the overlay; the expensive base-scene
+        # regen is coalesced so a burst of trims pays it once.
+        self._pending_render: list = []
+        self._regen_timer = QTimer(self)
+        self._regen_timer.setSingleShot(True)
+        self._regen_timer.setInterval(400)
+        self._regen_timer.timeout.connect(self._run_deferred_regen)
 
     # -- document lifecycle ----------------------------------------------------
     def attach_document(self, document, flatten: Optional[float] = None) -> None:
@@ -72,6 +80,7 @@ class ToolController(QObject):
             for c in self._draw_commands()
             if c.entity is not None
         }
+        self._pending_render = []
         self._refresh_overlay()
 
     # -- toggles ---------------------------------------------------------------
@@ -119,17 +128,48 @@ class ToolController(QObject):
         handle = self.index.pick(point, self._pick_tolerance)
         return self.index.entity(handle) if handle else None
 
-    def edges_geometry(self, handles=None, exclude=None):
-        """(segments, circles) for TRIM/EXTEND edge math."""
+    def edges_geometry(self, handles=None, exclude=None, near=None):
+        """(segments, circles) for TRIM/EXTEND edge math.
+
+        ``near`` is a world bbox: cutters that cannot touch it are filtered
+        out vectorized — a trim pick pays for LOCAL edges, not the whole
+        drawing (TRIM cutters must intersect the target by definition).
+        """
         if self.index is None:
             return [], []
-        if handles is None:
-            handles = [e.dxf.handle for e in self.window.document.modelspace()]
-        wanted = [h for h in handles if h != exclude]
-        segs = [tuple(s) for s in self.index.segments_of(wanted)]
+        if self.index._dirty:
+            self.index._build()
+        seg_arr = self.index._segs
+        circ_arr = self.index._circles
+        smask = np.ones(len(seg_arr), dtype=bool)
+        cmask = np.ones(len(circ_arr), dtype=bool)
+        if handles is not None:
+            wanted = set(handles)
+            wanted.discard(exclude)
+            smask &= np.fromiter((h in wanted for h in self.index._seg_owner),
+                                 bool, len(seg_arr))
+            cmask &= np.fromiter((h in wanted for h in self.index._circle_owner),
+                                 bool, len(circ_arr))
+        elif exclude is not None:
+            smask &= np.fromiter((h != exclude for h in self.index._seg_owner),
+                                 bool, len(seg_arr))
+            cmask &= np.fromiter((h != exclude for h in self.index._circle_owner),
+                                 bool, len(circ_arr))
+        if near is not None and len(seg_arr):
+            x0, y0, x1, y1 = near
+            smask &= ((np.minimum(seg_arr[:, 0], seg_arr[:, 2]) <= x1)
+                      & (np.maximum(seg_arr[:, 0], seg_arr[:, 2]) >= x0)
+                      & (np.minimum(seg_arr[:, 1], seg_arr[:, 3]) <= y1)
+                      & (np.maximum(seg_arr[:, 1], seg_arr[:, 3]) >= y0))
+        if near is not None and len(circ_arr):
+            x0, y0, x1, y1 = near
+            cmask &= ((circ_arr[:, 0] - circ_arr[:, 2] <= x1)
+                      & (circ_arr[:, 0] + circ_arr[:, 2] >= x0)
+                      & (circ_arr[:, 1] - circ_arr[:, 2] <= y1)
+                      & (circ_arr[:, 1] + circ_arr[:, 2] >= y0))
+        segs = [tuple(s) for s in seg_arr[smask]]
         # (center, r, a0, a1): arcs cut/bound only along their real sweep
-        circles = [((c[0], c[1]), c[2], c[4], c[5])
-                   for c in self.index.circles_of(wanted)]
+        circles = [((c[0], c[1]), c[2], c[4], c[5]) for c in circ_arr[cmask]]
         return segs, circles
 
     def _selection_entities(self) -> list:
@@ -182,8 +222,18 @@ class ToolController(QObject):
         if isinstance(command, actions.AddEntityCommand):
             self._refresh_overlay()
         else:
-            # edits touch existing (base-scene) entities: regen in memory
-            self.window.regen_in_memory()
+            # show the results NOW through the overlay; defer the full regen
+            # (the old geometry ghosts in the base scene for <1 burst)
+            for attr in ("new_entities", "copies", "entities"):
+                extra = getattr(command, attr, None)
+                if extra:
+                    self._pending_render.extend(extra)
+                    break
+            self._refresh_overlay()
+            self._regen_timer.start()
+
+    def _run_deferred_regen(self) -> None:
+        self.window.regen_in_memory()
 
     def _invalidate_geometry(self) -> None:
         if self.snap_engine is not None:
@@ -199,7 +249,7 @@ class ToolController(QObject):
         if any(t is not None and not isinstance(t, actions.AddEntityCommand)
                for t in tops):
             # an edit command crossed the undo boundary: base scene is stale
-            self.window.regen_in_memory()
+            self._regen_timer.start()
             return
         alive = {c.entity.dxf.handle for c in self._draw_commands()
                  if c.entity is not None}
@@ -222,6 +272,8 @@ class ToolController(QObject):
             if c.entity is not None
             and c.entity.dxf.handle not in self._base_handles
         ]
+        entities += [e for e in self._pending_render
+                     if e.is_alive and e.dxf.handle not in self._base_handles]
         scene = (build_scene_for_entities(document, entities, self._flatten)
                  if entities else None)
         self.window.viewport.set_overlay_scene(scene)

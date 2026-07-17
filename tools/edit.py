@@ -361,9 +361,13 @@ class _TrimExtendBase(Tool):
     def apply_to_entity(self, entity, point: Point) -> None:
         if not entity.is_alive:
             return
-        segs, circles = self.ctx.services.edges_geometry(
-            self._edges_handles, exclude=entity.dxf.handle)
         trim = self.trim_mode != self.shift  # Shift flips the mode
+        # TRIM cutters must intersect the target: filtering edges to the
+        # target's bbox keeps big drawings interactive. EXTEND boundaries
+        # can be arbitrarily far — no filter there.
+        near = _entity_bbox(entity) if trim else None
+        segs, circles = self.ctx.services.edges_geometry(
+            self._edges_handles, exclude=entity.dxf.handle, near=near)
         if trim:
             self._trim(entity, point, segs, circles)
         else:
@@ -579,6 +583,23 @@ class FilletTool(Tool):
         self.ctx.execute(actions.ReplaceEntitiesCommand(
             "FILLET", [self._first, entity], factories))
         self.ctx.finish()
+
+
+def _entity_bbox(entity):
+    """World bbox of a trim target, or None for unsupported types."""
+    t = entity.dxftype()
+    if t == "LINE":
+        s, e = entity.dxf.start, entity.dxf.end
+        return (min(s.x, e.x), min(s.y, e.y), max(s.x, e.x), max(s.y, e.y))
+    if t in ("CIRCLE", "ARC"):
+        c, r = entity.dxf.center, entity.dxf.radius
+        return (c.x - r, c.y - r, c.x + r, c.y + r)
+    if t == "LWPOLYLINE":
+        pts = entity.get_points("xy")
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        return (min(xs), min(ys), max(xs), max(ys))
+    return None
 
 
 def _point_on_entity_near(entity, target: Point):

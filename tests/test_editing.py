@@ -154,7 +154,7 @@ class Services:
         h = self.index.pick(point, 2.0)
         return self.index.entity(h) if h else None
 
-    def edges_geometry(self, handles=None, exclude=None):
+    def edges_geometry(self, handles=None, exclude=None, near=None):
         if handles is None:
             handles = [e.dxf.handle for e in self.index.document.modelspace()]
         wanted = [h for h in handles if h != exclude]
