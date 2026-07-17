@@ -73,6 +73,23 @@ def line_circle_intersections(seg: Seg, center: Point, r: float):
     return [(-b - sq) / (2 * a), (-b + sq) / (2 * a)]
 
 
+# Edge circles are (center, r) full circles or (center, r, a0, a1) arcs
+# (radians ccw, a1 > a0). A crossing only counts if it lies ON the arc.
+
+def _norm_circle(entry):
+    if len(entry) == 2:
+        return (entry[0], entry[1], 0.0, math.tau)
+    return entry
+
+
+def _on_arc(center: Point, a0: float, a1: float, x: float, y: float) -> bool:
+    span = a1 - a0
+    if span >= math.tau - EPS:
+        return True
+    ang = math.atan2(y - center[1], x - center[0]) % math.tau
+    return (ang - a0) % math.tau <= span + 1e-9
+
+
 # -- TRIM ----------------------------------------------------------------------
 
 def trim_segment(seg: Seg, cutters: list[Seg],
@@ -88,10 +105,14 @@ def trim_segment(seg: Seg, cutters: list[Seg],
         hit = line_line_intersection(seg, c)
         if hit is not None and -EPS < hit[0] < 1.0 + EPS:
             ts.append(min(max(hit[0], 0.0), 1.0))
-    for center, r in circles:
+    for entry in circles:
+        center, r, a0, a1 = _norm_circle(entry)
         for t in line_circle_intersections(seg, center, r):
             if -EPS < t < 1.0 + EPS:
-                ts.append(min(max(t, 0.0), 1.0))
+                x = seg[0] + t * (seg[2] - seg[0])
+                y = seg[1] + t * (seg[3] - seg[1])
+                if _on_arc(center, a0, a1, x, y):
+                    ts.append(min(max(t, 0.0), 1.0))
     ts = sorted({round(t, 12) for t in ts if EPS < t < 1.0 - EPS})
     if not ts:
         return None
@@ -121,9 +142,11 @@ def _circle_crossing_angles(center: Point, r: float, cutters: list[Seg],
                 x = cseg[0] + t * (cseg[2] - cseg[0])
                 y = cseg[1] + t * (cseg[3] - cseg[1])
                 angles.append(math.atan2(y - center[1], x - center[0]) % math.tau)
-    for c2, r2 in cutter_circles:
+    for entry in cutter_circles:
+        c2, r2, a0, a1 = _norm_circle(entry)
         for x, y in circle_circle_intersections(center, r, c2, r2):
-            angles.append(math.atan2(y - center[1], x - center[0]) % math.tau)
+            if _on_arc(c2, a0, a1, x, y):
+                angles.append(math.atan2(y - center[1], x - center[0]) % math.tau)
     return angles
 
 
@@ -265,8 +288,13 @@ def extend_segment(seg: Seg, edges: list[Seg],
             best = t if best is None else min(best, t)
         elif not forward and t < -EPS:
             best = t if best is None else max(best, t)
-    for center, r in circles:
+    for entry in circles:
+        center, r, a0, a1 = _norm_circle(entry)
         for t in line_circle_intersections(seg, center, r):
+            x = seg[0] + t * (seg[2] - seg[0])
+            y = seg[1] + t * (seg[3] - seg[1])
+            if not _on_arc(center, a0, a1, x, y):
+                continue
             if forward and t > 1.0 + EPS:
                 best = t if best is None else min(best, t)
             elif not forward and t < -EPS:

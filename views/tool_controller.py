@@ -127,7 +127,9 @@ class ToolController(QObject):
             handles = [e.dxf.handle for e in self.window.document.modelspace()]
         wanted = [h for h in handles if h != exclude]
         segs = [tuple(s) for s in self.index.segments_of(wanted)]
-        circles = [((c[0], c[1]), c[2]) for c in self.index.circles_of(wanted)]
+        # (center, r, a0, a1): arcs cut/bound only along their real sweep
+        circles = [((c[0], c[1]), c[2], c[4], c[5])
+                   for c in self.index.circles_of(wanted)]
         return segs, circles
 
     def _selection_entities(self) -> list:

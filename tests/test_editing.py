@@ -159,7 +159,8 @@ class Services:
             handles = [e.dxf.handle for e in self.index.document.modelspace()]
         wanted = [h for h in handles if h != exclude]
         segs = [tuple(s) for s in self.index.segments_of(wanted)]
-        circles = [((c[0], c[1]), c[2]) for c in self.index.circles_of(wanted)]
+        circles = [((c[0], c[1]), c[2], c[4], c[5])
+                   for c in self.index.circles_of(wanted)]
         return segs, circles
 
 
@@ -352,6 +353,24 @@ def test_fillet_zero_radius():
                 for l in h.msp.query("LINE"))
     assert (0.0, 0.0, 12.0, 0.0) in xs
     assert (12.0, 0.0, 12.0, 10.0) in xs
+
+
+def test_extend_ignores_phantom_arc_circle():
+    # User repro: a trimmed circle (now an ARC) must NOT act as its full
+    # phantom circle — EXTEND has to reach the real edge beyond it.
+    h = Harness()
+    # arc: right half-circle only (from -90 to 90 deg), center (50, 0) r=10
+    h.msp.add_arc((50.0, 0.0), 10.0, -90.0, 90.0)
+    h.msp.add_line((80.0, -10.0), (80.0, 10.0))   # the real boundary
+    target = h.msp.add_line((20.0, 0.0), (30.0, 0.0))
+    tool = ExtendTool(h.ctx)
+    tool.start()
+    tool.on_selection([])
+    tool.on_point((29.0, 0.0))    # extend to the right
+    lines = [l for l in h.msp.query("LINE") if l.dxf.start.y == 0]
+    # the phantom left side of the circle would stop it at x=40; the real
+    # first boundary on the sweep is the arc's right side at x=60
+    assert any(l.dxf.end.x == pytest.approx(60.0) for l in lines)
 
 
 def test_offset_tool_line():
