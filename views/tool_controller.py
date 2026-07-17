@@ -164,6 +164,13 @@ class ToolController(QObject):
     def _execute(self, command) -> None:
         self.window.history.execute(command)
         self._invalidate_geometry()
+        if (isinstance(command, actions.ReplaceEntitiesCommand)
+                and self.selection):
+            # a trimmed edge keeps its highlight through its survivors
+            olds = {e.dxf.handle for e in command.old_entities}
+            if olds & self.selection:
+                self.selection = (self.selection - olds) | {
+                    e.dxf.handle for e in command.new_entities}
         if self.selection and self.index is not None:
             # prune handles whose entities were erased or replaced
             self.selection = {

@@ -369,6 +369,23 @@ class _TrimExtendBase(Tool):
         else:
             self._extend(entity, point, segs, circles)
 
+    def _replace(self, name: str, entity, factories) -> None:
+        """Execute the swap and keep the edge list alive across it.
+
+        A trimmed cutting edge keeps cutting in AutoCAD: when the replaced
+        entity was one of our edges, its surviving pieces take its place.
+        """
+        cmd = actions.ReplaceEntitiesCommand(name, [entity], factories)
+        self.ctx.execute(cmd)
+        if self._edges_handles is not None:
+            handle = None
+            for e in cmd.old_entities:
+                handle = e.dxf.handle
+                if handle in self._edges_handles:
+                    self._edges_handles.remove(handle)
+                    self._edges_handles.extend(
+                        n.dxf.handle for n in cmd.new_entities)
+
     def _trim(self, entity, point, segs, circles) -> None:
         t = entity.dxftype()
         if t == "LINE":
@@ -383,8 +400,7 @@ class _TrimExtendBase(Tool):
                 (lambda msp, p=p: msp.add_line((p[0], p[1]), (p[2], p[3])))
                 for p in pieces
             ]
-            self.ctx.execute(actions.ReplaceEntitiesCommand(
-                "TRIM", [entity], factories))
+            self._replace("TRIM", entity, factories)
         elif t == "CIRCLE":
             center = (entity.dxf.center.x, entity.dxf.center.y)
             pick_ang = math.atan2(point[1] - center[1], point[0] - center[0])
@@ -394,10 +410,9 @@ class _TrimExtendBase(Tool):
                 self.ctx.echo(tr("A circle needs two crossings to trim."))
                 return
             a0, a1 = arc
-            self.ctx.execute(actions.ReplaceEntitiesCommand(
-                "TRIM", [entity],
-                [lambda msp, c=center, r=entity.dxf.radius, s=a0, e=a1:
-                     msp.add_arc(c, r, s, e)]))
+            self._replace("TRIM", entity,
+                          [lambda msp, c=center, r=entity.dxf.radius,
+                                  s=a0, e=a1: msp.add_arc(c, r, s, e)])
         elif t == "ARC":
             center = (entity.dxf.center.x, entity.dxf.center.y)
             pick_ang = math.atan2(point[1] - center[1], point[0] - center[0])
@@ -412,8 +427,7 @@ class _TrimExtendBase(Tool):
                      msp.add_arc(c, r, s, e))
                 for s0, e0 in spans
             ]
-            self.ctx.execute(actions.ReplaceEntitiesCommand(
-                "TRIM", [entity], factories))
+            self._replace("TRIM", entity, factories)
         else:
             self.ctx.echo(tr("TRIM supports LINE, CIRCLE and ARC for now."))
 
@@ -428,9 +442,9 @@ class _TrimExtendBase(Tool):
         if new_seg is None:
             self.ctx.echo(tr("No boundary edge to extend to."))
             return
-        self.ctx.execute(actions.ReplaceEntitiesCommand(
-            "EXTEND", [entity],
-            [lambda msp, p=new_seg: msp.add_line((p[0], p[1]), (p[2], p[3]))]))
+        self._replace("EXTEND", entity,
+                      [lambda msp, p=new_seg:
+                           msp.add_line((p[0], p[1]), (p[2], p[3]))])
 
 
 class TrimTool(_TrimExtendBase):

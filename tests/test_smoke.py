@@ -173,6 +173,11 @@ def test_edges_stay_highlighted_during_trim(qapp):
     assert win.tools.active()
     assert len(win.tools.selection) == 2      # edges stay lit during TRIM
     win.tools.on_click(10.5, 0)               # trim c1's right arc
+    assert len(win.tools.selection) == 2      # survivor arc replaces c1
+    # the trimmed edge keeps cutting: trim c2's left arc against the arc
+    win.tools.on_click(1.5, 0)
+    assert len(win.document.modelspace().query("ARC")) == 2
+    assert len(win.document.modelspace().query("CIRCLE")) == 0
     win.tools.on_text("")                     # Enter ends
     assert not win.tools.selection            # highlight off after command
     win.close()
