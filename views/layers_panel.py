@@ -56,13 +56,38 @@ class LayersPanel(QWidget):
         self.window = window
 
         self.table = QTableWidget(0, 6, self)
+        # Short single-glyph headers for the state columns so they stay narrow
+        # and the Name column gets the room (names were eliding to "...").
         self.table.setHorizontalHeaderLabels(
-            [tr("Cur"), tr("Name"), tr("On"), tr("Freeze"), tr("Lock"), tr("Color")])
+            ["", tr("Name"), "◍", "❄", "🔒", ""])
+        self.table.setHorizontalHeaderItem(
+            0, self._header_item("✓", tr("Current")))
+        self.table.setHorizontalHeaderItem(
+            2, self._header_item("◍", tr("On/Off")))
+        self.table.setHorizontalHeaderItem(
+            3, self._header_item("❄", tr("Freeze")))
+        self.table.setHorizontalHeaderItem(
+            4, self._header_item("🔒", tr("Lock")))
+        self.table.setHorizontalHeaderItem(
+            5, self._header_item("■", tr("Color")))
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked)
-        self.table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.Stretch)
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setDefaultSectionSize(22)  # compact rows
+
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)    # Name takes room
+        for col in (2, 3, 4, 5):
+            header.setSectionResizeMode(col, QHeaderView.Fixed)
+        self.table.setColumnWidth(0, 26)
+        self.table.setColumnWidth(2, 32)
+        self.table.setColumnWidth(3, 32)
+        self.table.setColumnWidth(4, 32)
+        self.table.setColumnWidth(5, 44)
+
         self.table.cellDoubleClicked.connect(self._on_double_click)
         self.table.cellChanged.connect(self._on_cell_changed)
         self.table.cellClicked.connect(self._on_cell_clicked)
@@ -86,6 +111,13 @@ class LayersPanel(QWidget):
 
         self._loading = False
         self.refresh()
+
+    @staticmethod
+    def _header_item(text: str, tooltip: str) -> QTableWidgetItem:
+        item = QTableWidgetItem(text)
+        item.setToolTip(tooltip)
+        item.setTextAlignment(Qt.AlignCenter)
+        return item
 
     # -- data -----------------------------------------------------------------
     @property
@@ -120,10 +152,12 @@ class LayersPanel(QWidget):
             item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             self.table.setItem(row, col, item)
 
-        swatch = QTableWidgetItem(f"  {info.color}")
-        pm = QPixmap(14, 14)
+        swatch = QTableWidgetItem(str(info.color))
+        swatch.setTextAlignment(Qt.AlignCenter)
+        pm = QPixmap(12, 12)
         pm.fill(aci_to_qcolor(info.color))
         swatch.setIcon(QIcon(pm))
+        swatch.setToolTip(tr("ACI color {n}", n=info.color))
         swatch.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         self.table.setItem(row, 5, swatch)
 

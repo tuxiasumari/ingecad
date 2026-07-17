@@ -298,6 +298,7 @@ class MainWindow(QMainWindow):
             dock = QDockWidget(tr("Layers"), self)
             dock.setObjectName("layers_dock")
             dock.setWidget(self._layers_panel)
+            dock.setMinimumWidth(260)
             self.addDockWidget(Qt.RightDockWidgetArea, dock)
             self._layers_dock = dock
         else:
