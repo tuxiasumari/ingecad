@@ -495,6 +495,10 @@ class ToolController(QObject):
         if entity is None:
             return
         self._grip_drag = (handle, index, role, SnapshotCommand([entity]))
+        # Hide the base-scene copy ONCE (a full-scene re-upload); from here
+        # the live entity rides the cheap 1-entity overlay each frame.
+        self.window.viewport.hide_handles([handle])
+        self._refresh_overlay()
 
     def update_grip_drag(self, wx: float, wy: float) -> None:
         if self._grip_drag is None:
@@ -503,8 +507,8 @@ class ToolController(QObject):
         entity = self.index.entity(handle)
         if entity is not None:
             apply_grip_edit(entity, index, role, (wx, wy))
-            self._invalidate_geometry()
-            self.window.viewport.hide_handles([handle])
+            # per frame: rebuild only the dragged entity's overlay — no
+            # index rebuild, no whole-scene re-upload
             self._refresh_overlay()
 
     def finish_grip_drag(self, wx: float, wy: float) -> None:
@@ -518,8 +522,7 @@ class ToolController(QObject):
             snap.commit(self.window.document)
             self.window.history._undo.append(snap)
             self.window.history._redo.clear()
-            self._invalidate_geometry()
-            self.window.viewport.hide_handles([handle])
+            self._invalidate_geometry()   # grips/snap see the new shape
             self._refresh_overlay()
             self._regen_timer.start()
 
