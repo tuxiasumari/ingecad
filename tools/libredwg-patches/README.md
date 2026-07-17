@@ -10,6 +10,7 @@ the real-file bench and are applied on top of the **0.14** release tarball.
 | `0002-dxf-hex-encode-binary-TF-chunks.patch` | Ours — `proxy_data` (group 310) written as raw bytes instead of hex; submitted as [LibreDWG#1311](https://github.com/LibreDWG/libredwg/pull/1311) |
 | `0003-dxf-import-dynamic-block-objects.patch` | Ours — four dxf2dwg import fixes (EVALUATION_GRAPH, BLOCKSTRETCHACTION SEGV, EVAL_Edge heap overflow, FIELD childval); submitted as [LibreDWG#1312](https://github.com/LibreDWG/libredwg/pull/1312) |
 | `0004-dxf-hatch-boundary-handles-per-path.patch` | Ours — associative multi-path HATCHes lost pattern scale/def lines through the roundtrip (hdl_idx never reset per path); submitted as [LibreDWG#1313](https://github.com/LibreDWG/libredwg/pull/1313) |
+| `0005-dxf-string-emission.patch` | Ours — caret-encode C0 controls, embed-before-quote, escape-preserving chunk splits, dxf+2 continuation codes; corpus success 83%→96.6% (1385 real DWGs); submitted as [LibreDWG#1314](https://github.com/LibreDWG/libredwg/pull/1314) |
 
 0001/0002 were found with a 27 MB r2013 cadastre DWG whose
 ACAD_PROXY_ENTITYs decode partially (AcDs segments): the conversion
