@@ -231,6 +231,12 @@ class ToolController(QObject):
     def in_selection_mode(self) -> bool:
         return self.tool is None or self._selecting_for is not None
 
+    def start_window(self, wx: float, wy: float) -> None:
+        """Anchor a selection window (drag start). Idempotent during a drag."""
+        if self._window_anchor is None:
+            self._window_anchor = (wx, wy)
+            self.changed.emit()
+
     def on_click(self, wx: float, wy: float, shift: bool = False) -> None:
         if self.in_selection_mode():
             self._selection_click(wx, wy, shift)

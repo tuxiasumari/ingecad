@@ -25,7 +25,8 @@ class GeometryIndex:
         self._dirty = True
         self._segs = np.empty((0, 4))
         self._seg_owner: list[str] = []
-        self._circles = np.empty((0, 4))   # cx cy r arc_flag(0 full)
+        # cx cy r arc_flag a0 a1 (radians, ccw, a1 > a0; full circle: 0..tau)
+        self._circles = np.empty((0, 6))
         self._circle_owner: list[str] = []
         self._boxes = np.empty((0, 4))     # min_x min_y max_x max_y per entity
         self._box_owner: list[str] = []
@@ -56,10 +57,17 @@ class GeometryIndex:
                     for a, b in pairs:
                         segs.append((a[0], a[1], b[0], b[1]))
                         seg_owner.append(h)
-                elif t in ("CIRCLE", "ARC"):
+                elif t == "CIRCLE":
                     c = e.dxf.center
-                    circles.append((c.x, c.y, e.dxf.radius,
-                                    0.0 if t == "CIRCLE" else 1.0))
+                    circles.append((c.x, c.y, e.dxf.radius, 0.0, 0.0, math.tau))
+                    circle_owner.append(h)
+                elif t == "ARC":
+                    c = e.dxf.center
+                    a0 = math.radians(e.dxf.start_angle) % math.tau
+                    a1 = math.radians(e.dxf.end_angle) % math.tau
+                    if a1 <= a0:
+                        a1 += math.tau
+                    circles.append((c.x, c.y, e.dxf.radius, 1.0, a0, a1))
                     circle_owner.append(h)
                 elif t == "POINT":
                     l = e.dxf.location
@@ -75,7 +83,7 @@ class GeometryIndex:
                 continue
         self._segs = np.asarray(segs, dtype=np.float64).reshape(-1, 4)
         self._seg_owner = seg_owner
-        self._circles = np.asarray(circles, dtype=np.float64).reshape(-1, 4)
+        self._circles = np.asarray(circles, dtype=np.float64).reshape(-1, 6)
         self._circle_owner = circle_owner
         self._boxes = np.asarray(boxes, dtype=np.float64).reshape(-1, 4)
         self._box_owner = box_owner
@@ -95,8 +103,14 @@ class GeometryIndex:
             if d[i] <= tolerance:
                 best = (float(d[i]), self._seg_owner[i])
         if len(self._circles):
-            dc = np.hypot(self._circles[:, 0] - cx, self._circles[:, 1] - cy)
-            d = np.abs(dc - self._circles[:, 2])
+            c = self._circles
+            dc = np.hypot(c[:, 0] - cx, c[:, 1] - cy)
+            d = np.abs(dc - c[:, 2])
+            # arcs only count when the cursor angle falls inside their sweep
+            ang = np.arctan2(cy - c[:, 1], cx - c[:, 0]) % math.tau
+            rel = (ang - c[:, 4]) % math.tau
+            on_span = (c[:, 3] == 0.0) | (rel <= (c[:, 5] - c[:, 4]))
+            d = np.where(on_span, d, np.inf)
             i = int(np.argmin(d))
             if d[i] <= tolerance and (best is None or d[i] < best[0]):
                 best = (float(d[i]), self._circle_owner[i])

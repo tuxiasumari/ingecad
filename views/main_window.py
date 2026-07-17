@@ -238,8 +238,8 @@ class MainWindow(QMainWindow):
         self.dispatcher.submit(text)
 
     def _on_prompt_cancelled(self) -> None:
-        if self.tools.active():
-            self.tools.cancel()
+        # tools.cancel() handles both cases: active tool, or idle selection
+        self.tools.cancel()
         self.dispatcher.cancel()
 
     # -- drafting mode toggles (F3/F8/F10, classic status bar) ------------------

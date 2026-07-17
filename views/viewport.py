@@ -99,6 +99,7 @@ class Viewport(QOpenGLWidget):
         self._overlay_scene: Optional[Scene] = None
         self._overlay_dirty = False
         self._overlay_bufs: dict[str, tuple] = {}
+        self._sel_press = None  # pending left press in selection mode
         # Interactive tool hook (ToolController): hover/click/preview/markers.
         self.tool_delegate = None
 
@@ -412,10 +413,19 @@ class Viewport(QOpenGLWidget):
                 x1, y1 = self.view.world_to_screen(s[0], s[1])
                 x2, y2 = self.view.world_to_screen(s[2], s[3])
                 p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            import math as _math
+
             for c in circles[:1000]:
                 x, y = self.view.world_to_screen(c[0], c[1])
                 r = c[2] * self.view.scale
-                p.drawEllipse(QPointF(x, y), r, r)
+                if len(c) >= 6 and c[3] != 0.0:
+                    # highlight the ARC's real sweep, not its full circle
+                    a0 = _math.degrees(c[4])
+                    span = _math.degrees(c[5] - c[4])
+                    p.drawArc(int(x - r), int(y - r), int(2 * r), int(2 * r),
+                              int(a0 * 16), int(span * 16))
+                else:
+                    p.drawEllipse(QPointF(x, y), r, r)
             for b in boxes[:1000]:
                 x1, y1 = self.view.world_to_screen(b[0], b[3])
                 x2, y2 = self.view.world_to_screen(b[2], b[1])
@@ -532,6 +542,10 @@ class Viewport(QOpenGLWidget):
             pos = event.position()
             wx, wy = self.view.screen_to_world(pos.x(), pos.y())
             shift = bool(event.modifiers() & Qt.ShiftModifier)
+            if self.tool_delegate.in_selection_mode():
+                # defer to release: a drag becomes a window, a click a pick
+                self._sel_press = (pos, (wx, wy), shift)
+                return
             self.tool_delegate.on_click(wx, wy, shift)
             self.update()
             return
@@ -558,6 +572,22 @@ class Viewport(QOpenGLWidget):
             self.setCursor(Qt.BlankCursor)
             self.update()
             return
+        if (event.button() == Qt.LeftButton and self._sel_press is not None
+                and self.tool_delegate is not None):
+            press_pos, press_world, shift = self._sel_press
+            self._sel_press = None
+            pos = event.position()
+            dragged = (abs(pos.x() - press_pos.x()) > 4
+                       or abs(pos.y() - press_pos.y()) > 4)
+            if dragged:
+                # drag-window: anchor at press, complete at release
+                self.tool_delegate.start_window(*press_world)
+                wx, wy = self.view.screen_to_world(pos.x(), pos.y())
+                self.tool_delegate.on_click(wx, wy, shift)
+            else:
+                self.tool_delegate.on_click(*press_world, shift)
+            self.update()
+            return
         super().mouseReleaseEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
@@ -577,6 +607,11 @@ class Viewport(QOpenGLWidget):
             if self.tool_delegate is not None:
                 from views.tool_controller import SNAP_PX
 
+                if (self._sel_press is not None
+                        and (abs(pos.x() - self._sel_press[0].x()) > 4
+                             or abs(pos.y() - self._sel_press[0].y()) > 4)):
+                    # live drag-window rectangle while the button is held
+                    self.tool_delegate.start_window(*self._sel_press[1])
                 self.tool_delegate.on_hover(wx, wy, SNAP_PX / self.view.scale)
             self.cursorMoved.emit(wx, wy)
         self.update()
