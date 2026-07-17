@@ -542,7 +542,7 @@ class Viewport(QOpenGLWidget):
             pos = event.position()
             wx, wy = self.view.screen_to_world(pos.x(), pos.y())
             shift = bool(event.modifiers() & Qt.ShiftModifier)
-            if self.tool_delegate.in_selection_mode():
+            if self.tool_delegate.wants_drag_rect():
                 # defer to release: a drag becomes a window, a click a pick
                 self._sel_press = (pos, (wx, wy), shift)
                 return

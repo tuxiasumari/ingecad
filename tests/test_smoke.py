@@ -150,6 +150,40 @@ def test_trim_full_flow_through_controller(qapp):
     win.close()
 
 
+def test_trim_by_crossing_window(qapp):
+    # TRIM targets can be captured with a window/crossing rectangle: two
+    # parallel lines crossing a cutter, one crossing rect trims both spans.
+    from views.main_window import MainWindow
+
+    win = MainWindow()
+    win.show()
+    qapp.processEvents()
+    for y in (0.0, 5.0):
+        win.dispatcher.submit("l")
+        win.tools.on_click(0, y)
+        win.tools.on_click(100, y)
+        win.tools.on_text("")
+    win.dispatcher.submit("l")          # vertical cutter at x=50
+    win.tools.on_click(50, -10)
+    win.tools.on_click(50, 15)
+    win.tools.on_text("")
+
+    win.dispatcher.submit("tr")
+    win.tools.on_text("")               # all edges
+    win.tools.on_hover(75, 2.5, 2.0)
+    # crossing rect (right-to-left) over the right spans of both lines
+    win.tools.start_window(90.0, 7.0)
+    win.tools.on_click(60.0, -2.0)      # release to the LEFT: crossing
+    spans = sorted(
+        (round(l.dxf.start.x, 1), round(l.dxf.end.x, 1), round(l.dxf.start.y, 1))
+        for l in win.document.modelspace().query("LINE")
+        if l.dxf.start.y == l.dxf.end.y
+    )
+    assert spans == [(0.0, 50.0, 0.0), (0.0, 50.0, 5.0)]
+    win.tools.cancel()
+    win.close()
+
+
 def test_zoom_extents_frames_placeholder_bounds(qapp):
     from views.main_window import MainWindow
 

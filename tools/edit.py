@@ -325,6 +325,7 @@ class OffsetTool(Tool):
 class _TrimExtendBase(Tool):
     wants_selection = True   # the cutting/boundary edges
     entity_picker = True
+    accepts_target_windows = True
     trim_mode = True
 
     def start(self) -> None:
@@ -345,6 +346,20 @@ class _TrimExtendBase(Tool):
         entity = self.ctx.services.pick_entity(point)
         if entity is None:
             self.ctx.echo(tr("Nothing there."))
+            return
+        self.apply_to_entity(entity, point)
+
+    def on_target_entities(self, entities: list, rect) -> None:
+        """Window/crossing over targets: trim each near the rect center."""
+        cx = (rect[0] + rect[2]) / 2.0
+        cy = (rect[1] + rect[3]) / 2.0
+        for entity in entities:
+            point = _point_on_entity_near(entity, (cx, cy))
+            if point is not None:
+                self.apply_to_entity(entity, point)
+
+    def apply_to_entity(self, entity, point: Point) -> None:
+        if not entity.is_alive:
             return
         segs, circles = self.ctx.services.edges_geometry(
             self._edges_handles, exclude=entity.dxf.handle)
@@ -518,6 +533,31 @@ class FilletTool(Tool):
         self.ctx.execute(actions.ReplaceEntitiesCommand(
             "FILLET", [self._first, entity], factories))
         self.ctx.finish()
+
+
+def _point_on_entity_near(entity, target: Point):
+    """Closest point ON the entity to a target point (window-trim picks)."""
+    t = entity.dxftype()
+    if t == "LINE":
+        seg = (entity.dxf.start.x, entity.dxf.start.y,
+               entity.dxf.end.x, entity.dxf.end.y)
+        u = _param_on_segment(seg, target)
+        return (seg[0] + u * (seg[2] - seg[0]), seg[1] + u * (seg[3] - seg[1]))
+    if t in ("CIRCLE", "ARC"):
+        c = entity.dxf.center
+        ang = math.atan2(target[1] - c.y, target[0] - c.x)
+        if t == "ARC":
+            a0 = math.radians(entity.dxf.start_angle) % math.tau
+            a1 = math.radians(entity.dxf.end_angle) % math.tau
+            if a1 <= a0:
+                a1 += math.tau
+            rel = (ang - a0) % math.tau
+            if rel > (a1 - a0):
+                # clamp to the nearest arc end
+                ang = a0 if rel - (a1 - a0) > (math.tau - rel) else a1
+        r = entity.dxf.radius
+        return (c.x + r * math.cos(ang), c.y + r * math.sin(ang))
+    return None
 
 
 def _param_on_segment(seg, point) -> float:

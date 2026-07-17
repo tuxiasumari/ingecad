@@ -231,6 +231,11 @@ class ToolController(QObject):
     def in_selection_mode(self) -> bool:
         return self.tool is None or self._selecting_for is not None
 
+    def wants_drag_rect(self) -> bool:
+        """Left press should defer to release (drag = window rectangle)."""
+        return (self.in_selection_mode()
+                or (self.tool is not None and self.tool.accepts_target_windows))
+
     def start_window(self, wx: float, wy: float) -> None:
         """Anchor a selection window (drag start). Idempotent during a drag."""
         if self._window_anchor is None:
@@ -245,6 +250,25 @@ class ToolController(QObject):
         if self.tool is None:
             return
         self.tool.shift = shift
+        if self.tool.accepts_target_windows and self.index is not None:
+            if self._window_anchor is not None:
+                # complete a target window/crossing (drag or click-click)
+                ax, ay = self._window_anchor
+                self._window_anchor = None
+                rect = (min(ax, wx), min(ay, wy), max(ax, wx), max(ay, wy))
+                handles = (self.index.window(rect) if wx >= ax
+                           else self.index.crossing(rect))
+                entities = [e for h in handles
+                            if (e := self.index.entity(h)) is not None
+                            and e.is_alive]
+                self.tool.on_target_entities(entities, rect)
+                self.changed.emit()
+                return
+            if self.index.pick((wx, wy), self._pick_tolerance) is None:
+                # empty click: anchor a target window instead of "nothing"
+                self._window_anchor = (wx, wy)
+                self.changed.emit()
+                return
         self.tool.on_point(self.resolved_point(wx, wy))
         self.changed.emit()
 

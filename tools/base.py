@@ -42,6 +42,12 @@ class Tool:
     # Tools whose clicks pick ENTITIES (trim targets, fillet lines) get raw
     # cursor points: AutoCAD suppresses osnap during object picking.
     entity_picker: ClassVar[bool] = False
+    # Tools whose target phase also accepts window/crossing rectangles
+    # (TRIM/EXTEND): a drag or empty-click window feeds many targets.
+    accepts_target_windows: ClassVar[bool] = False
+
+    def on_target_entities(self, entities: list, rect) -> None:
+        """Targets captured by a window/crossing during the tool's pick phase."""
 
     def start(self) -> None: ...
 
