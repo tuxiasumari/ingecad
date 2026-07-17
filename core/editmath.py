@@ -38,6 +38,24 @@ def line_line_intersection(s1: Seg, s2: Seg, infinite2: bool = False):
     return t, (x1 + t * (x2 - x1), y1 + t * (y2 - y1))
 
 
+def circle_circle_intersections(c1: Point, r1: float,
+                                c2: Point, r2: float) -> list[Point]:
+    """Intersection points of two circles (0, 1 or 2)."""
+    dx, dy = c2[0] - c1[0], c2[1] - c1[1]
+    d = math.hypot(dx, dy)
+    if d < EPS or d > r1 + r2 + EPS or d < abs(r1 - r2) - EPS:
+        return []
+    a = (r1 * r1 - r2 * r2 + d * d) / (2.0 * d)
+    h2 = r1 * r1 - a * a
+    h = math.sqrt(max(0.0, h2))
+    mx = c1[0] + a * dx / d
+    my = c1[1] + a * dy / d
+    if h < EPS:
+        return [(mx, my)]
+    ox, oy = -dy / d * h, dx / d * h
+    return [(mx + ox, my + oy), (mx - ox, my - oy)]
+
+
 def line_circle_intersections(seg: Seg, center: Point, r: float):
     """Params t (may be outside [0,1]) where the segment's line meets circle."""
     x1, y1, x2, y2 = seg
@@ -94,13 +112,8 @@ def trim_segment(seg: Seg, cutters: list[Seg],
     return pieces
 
 
-def trim_circle(center: Point, r: float, cutters: list[Seg],
-                pick_angle: float) -> Optional[tuple[float, float]]:
-    """Trim a full circle at its cutter crossings: the surviving ARC.
-
-    Returns (start_angle, end_angle) in degrees ccw, or None if fewer than
-    two crossings exist (a circle needs two cuts).
-    """
+def _circle_crossing_angles(center: Point, r: float, cutters: list[Seg],
+                            cutter_circles: list[tuple[Point, float]]):
     angles: list[float] = []
     for cseg in cutters:
         for t in line_circle_intersections(cseg, center, r):
@@ -108,6 +121,23 @@ def trim_circle(center: Point, r: float, cutters: list[Seg],
                 x = cseg[0] + t * (cseg[2] - cseg[0])
                 y = cseg[1] + t * (cseg[3] - cseg[1])
                 angles.append(math.atan2(y - center[1], x - center[0]) % math.tau)
+    for c2, r2 in cutter_circles:
+        for x, y in circle_circle_intersections(center, r, c2, r2):
+            angles.append(math.atan2(y - center[1], x - center[0]) % math.tau)
+    return angles
+
+
+def trim_circle(center: Point, r: float, cutters: list[Seg],
+                pick_angle: float,
+                cutter_circles: Optional[list[tuple[Point, float]]] = None,
+                ) -> Optional[tuple[float, float]]:
+    """Trim a full circle at its cutter crossings: the surviving ARC.
+
+    Cutters can be segments AND other circles/arcs (the classic
+    two-intersecting-circles trim). Returns (start_angle, end_angle) in
+    degrees ccw, or None if fewer than two crossings exist.
+    """
+    angles = _circle_crossing_angles(center, r, cutters, cutter_circles or [])
     angles = sorted(set(angles))
     if len(angles) < 2:
         return None
@@ -122,20 +152,17 @@ def trim_circle(center: Point, r: float, cutters: list[Seg],
 
 
 def trim_arc(center: Point, r: float, a_start: float, a_end: float,
-             cutters: list[Seg], pick_angle: float):
+             cutters: list[Seg], pick_angle: float,
+             cutter_circles: Optional[list[tuple[Point, float]]] = None):
     """Trim an ARC (degrees) around pick_angle. Returns list of (a0, a1)."""
     s = math.radians(a_start) % math.tau
     e = math.radians(a_end) % math.tau
     sweep = (e - s) % math.tau or math.tau
     cuts: list[float] = []
-    for cseg in cutters:
-        for t in line_circle_intersections(cseg, center, r):
-            if -EPS <= t <= 1.0 + EPS:
-                x = cseg[0] + t * (cseg[2] - cseg[0])
-                y = cseg[1] + t * (cseg[3] - cseg[1])
-                rel = (math.atan2(y - center[1], x - center[0]) - s) % math.tau
-                if EPS < rel < sweep - EPS:
-                    cuts.append(rel)
+    for ang in _circle_crossing_angles(center, r, cutters, cutter_circles or []):
+        rel = (ang - s) % math.tau
+        if EPS < rel < sweep - EPS:
+            cuts.append(rel)
     cuts = sorted(set(cuts))
     if not cuts:
         return None

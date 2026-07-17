@@ -121,6 +121,14 @@ class MainWindow(QMainWindow):
             edges |= Qt.BottomEdge
         return edges
 
+    def keyPressEvent(self, event) -> None:
+        # Global Esc fallback: whatever widget holds focus, Esc must cancel
+        # the active tool / clear the selection (AutoCAD reflex).
+        if event.key() == Qt.Key_Escape:
+            self._on_prompt_cancelled()
+            return
+        super().keyPressEvent(event)
+
     def eventFilter(self, obj, event) -> bool:
         # AutoCAD feel: typing over the canvas lands in the command line.
         if (

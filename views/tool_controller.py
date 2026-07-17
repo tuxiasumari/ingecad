@@ -161,6 +161,12 @@ class ToolController(QObject):
     def _execute(self, command) -> None:
         self.window.history.execute(command)
         self._invalidate_geometry()
+        if self.selection and self.index is not None:
+            # prune handles whose entities were erased or replaced
+            self.selection = {
+                h for h in self.selection
+                if (e := self.index.entity(h)) is not None and e.is_alive
+            }
         if isinstance(command, actions.AddEntityCommand):
             self._refresh_overlay()
         else:

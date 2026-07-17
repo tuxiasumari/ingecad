@@ -238,6 +238,36 @@ def test_trim_tool_line_between_cutters():
     assert any(l.dxf.end.x == 100 for l in h.msp.query("LINE"))
 
 
+def test_trim_circle_with_circle_edges():
+    # The classic workflow: two intersecting circles, both preselected as
+    # cutting edges, click the arc span to remove — circle becomes an ARC.
+    h = Harness()
+    c1 = h.msp.add_circle((0.0, 0.0), 10.0)
+    c2 = h.msp.add_circle((12.0, 0.0), 10.0)
+    tool = TrimTool(h.ctx)
+    tool.start()
+    tool.on_selection([c1, c2])     # noun-verb: both circles are edges
+    tool.on_point((10.0, 0.0))      # pick c1's right arc (inside c2)
+    assert len(h.msp.query("CIRCLE")) == 1     # c1 replaced
+    arcs = h.msp.query("ARC")
+    assert len(arcs) == 1
+    arc = arcs[0]
+    assert arc.dxf.center.x == pytest.approx(0.0)
+    assert arc.dxf.radius == pytest.approx(10.0)
+    # the removed span contains angle 0 (the pick); the survivor does not
+    a0 = arc.dxf.start_angle % 360
+    a1 = arc.dxf.end_angle % 360
+    sweep = (a1 - a0) % 360
+    assert ((0.0 - a0) % 360) > sweep      # 0 deg is outside the survivor
+    # crossings at (6, +/-8): +/- atan2(8, 6) = +/-53.13 deg from c1
+    expected = math.degrees(math.atan2(8.0, 6.0))
+    assert a0 == pytest.approx(expected, abs=1e-6)
+    assert a1 == pytest.approx(360.0 - expected, abs=1e-6)
+    # trimming continues (multiple picks) until Enter
+    tool.on_enter()
+    assert h.finished
+
+
 def test_extend_tool_and_shift_flip():
     h = Harness()
     target = h.msp.add_line((0, 0), (40, 0))

@@ -373,7 +373,8 @@ class _TrimExtendBase(Tool):
         elif t == "CIRCLE":
             center = (entity.dxf.center.x, entity.dxf.center.y)
             pick_ang = math.atan2(point[1] - center[1], point[0] - center[0])
-            arc = editmath.trim_circle(center, entity.dxf.radius, segs, pick_ang)
+            arc = editmath.trim_circle(center, entity.dxf.radius, segs, pick_ang,
+                                       cutter_circles=circles)
             if arc is None:
                 self.ctx.echo(tr("A circle needs two crossings to trim."))
                 return
@@ -387,7 +388,7 @@ class _TrimExtendBase(Tool):
             pick_ang = math.atan2(point[1] - center[1], point[0] - center[0])
             spans = editmath.trim_arc(
                 center, entity.dxf.radius, entity.dxf.start_angle,
-                entity.dxf.end_angle, segs, pick_ang)
+                entity.dxf.end_angle, segs, pick_ang, cutter_circles=circles)
             if spans is None:
                 self.ctx.echo(tr("No cutting edge crosses it."))
                 return
