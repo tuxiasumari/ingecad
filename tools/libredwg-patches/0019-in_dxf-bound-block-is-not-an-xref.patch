@@ -1,0 +1,37 @@
+Subject: in_dxf: a block with no xref path is local, not an xref
+
+Bound-xref blocks (names like "A$C7B302068") and other local blocks can
+carry a stray xref bit (0x4) in their BLOCK_RECORD table flag (group 70).
+in_dxf's SET_CTRL_BIT(4, blkisxref) copied that bit onto the BLOCK_HEADER,
+so LibreDWG marked the block as an external reference — and AutoCAD/
+BricsCAD then render every insert of it as a giant unresolved "Xref
+<name>" placeholder instead of the block's geometry (whole furniture
+layers vanished on a re-saved plan). ODA writes blkisxref 0 for the same
+input.
+
+A real xref must have an xref path. When the BLOCK entity is linked to its
+header, clear blkisxref/xrefoverlaid if the block has no xref pathname —
+it is local. Verified: the block decodes byte-identical to ODA and the
+plan renders correctly in BricsCAD; all 254 unit tests pass.
+
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+--- a/src/in_dxf.c
++++ b/src/in_dxf.c
+@@ -13727,6 +13727,20 @@ dxf_blocks_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
+                           _hdr->base_pt.x = _obj->base_pt.x;
+                           _hdr->base_pt.y = _obj->base_pt.y;
+                           LOG_TRACE ("BLOCK_HEADER.base_pt = BLOCK.base_pt\n");
++                          // A bound/local block (e.g. "A$C..." from a bound
++                          // xref) keeps a stray xref bit in its BLOCK_RECORD
++                          // flag 70, but a real xref must have an xref path.
++                          // No path => it is local: clear blkisxref, or
++                          // AutoCAD/BricsCAD render it as an unresolved Xref.
++                          if (_hdr->blkisxref
++                              && bit_empty_T (dat, _obj->xref_pname))
++                            {
++                              _hdr->blkisxref = 0;
++                              _hdr->xrefoverlaid = 0;
++                              LOG_TRACE ("BLOCK_HEADER.blkisxref = 0 "
++                                         "(no xref path, local block)\n");
++                            }
