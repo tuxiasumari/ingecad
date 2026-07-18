@@ -1,0 +1,32 @@
+Subject: in_dxf: SORTENTSTABLE sort handles must not register in object_map
+
+SORTENTSTABLE.sort_ents are code-0 ordering handles that intentionally
+alias the real entity handles they sort. in_dxf built each via
+dwg_add_handleref(dwg, 0, value, obj) — passing obj makes dwg_add_handle
+register the handle in dwg->object_map (its `code == 0` branch). Since the
+sort handle equals an existing entity's handle, every entry collided
+("Duplicate handle X for object N already points to object M"): a real
+cadastre SORTENTSTABLE with 3360 entries emitted 3040 such errors and
+left downstream handle resolution corrupt, so AutoCAD/BricsCAD/ODA read
+back the block owners as invalid and refused / crashed on the file.
+
+Pass NULL instead of obj so the sort handle is stored (code 0, correct
+value) without polluting the object_map. On the COFOPRI cadastre this
+drops the duplicate-handle errors 3040 -> 1 and the file now opens and
+renders correctly in BricsCAD (previously a hard failure).
+
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+--- a/src/in_dxf.c
++++ b/src/in_dxf.c
+@@ -10104,7 +10104,11 @@
+                 if (o->num_ents > 0 && !o->sort_ents[o->num_ents - 1])
+                   {
++                    // sort_ents are code-0 ordering handles that alias real
++                    // entity handles; pass NULL so they are NOT registered in
++                    // the object_map (obj would collide with the true entity,
++                    // corrupting handle resolution on large files).
+                     BITCODE_H hdl
+-                        = dwg_add_handleref (dwg, 0, pair->value.u, obj);
++                        = dwg_add_handleref (dwg, 0, pair->value.u, NULL);
+                     o->sort_ents[o->num_ents - 1] = hdl;
