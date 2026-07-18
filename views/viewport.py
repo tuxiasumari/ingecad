@@ -118,6 +118,11 @@ class Viewport(QOpenGLWidget):
         self._sel_press = None  # pending left press in selection mode
         self._grip_hover = None  # grip under the cursor, if any
         self._pan_mode = False   # interactive PAN command (open-hand cursor)
+        # Status-bar drafting aids: GRID (F7) draws the reference grid under
+        # the drawing; LWT toggles on-screen lineweight display.
+        self.grid_on = False
+        self.lwt_on = True
+        self._grid_buf = None    # (vao, vbo, count, key) — rebuilt on view change
         # Interactive tool hook (ToolController): hover/click/preview/markers.
         self.tool_delegate = None
 
@@ -354,6 +359,9 @@ class Viewport(QOpenGLWidget):
 
         self._program.bind()
 
+        if self.grid_on:
+            self._draw_grid(gl)
+
         self._program.setUniformValue(self._loc_mvp, self._mvp())
         self._axes_vao.bind()
         gl.glDrawArrays(GL_LINES, 0, self._axes_count)
@@ -452,6 +460,66 @@ class Viewport(QOpenGLWidget):
                 data["rgba"][:, 3] = (data["rgba"][:, 3] * 0.55).astype("u1")
                 self._ghost_bufs[name] = self._make_vao(data)
 
+    # Grid colors: faint minor lines, slightly brighter every 5th (major).
+    GRID_MINOR = (52, 58, 66, 255)
+    GRID_MAJOR = (72, 80, 92, 255)
+
+    def _grid_spacing(self) -> float:
+        """Adaptive 1-2-5 spacing that keeps cells ~25-90 px on screen."""
+        import math
+        raw = 35.0 / max(self.view.scale, 1e-12)
+        exp = math.floor(math.log10(raw)) if raw > 0 else 0
+        for m in (1.0, 2.0, 5.0, 10.0):
+            s = m * 10.0 ** exp
+            if s * self.view.scale >= 25.0:
+                return s
+        return 10.0 ** (exp + 1)
+
+    def _draw_grid(self, gl) -> None:
+        """Reference grid under the drawing (GRID / F7), BricsCAD-style lines.
+
+        A tiny VBO (a few hundred vertices) keyed on the snapped view rect:
+        static under zoom-stable panning, rebuilt only when the visible cell
+        range changes — never per frame while idle.
+        """
+        x0, y0, x1, y1 = self._view_world_rect()
+        s = self._grid_spacing()
+        i0, i1 = int(np.floor(x0 / s)), int(np.ceil(x1 / s))
+        j0, j1 = int(np.floor(y0 / s)), int(np.ceil(y1 / s))
+        key = (s, i0, i1, j0, j1)
+        if self._grid_buf is None or self._grid_buf[3] != key:
+            if self._grid_buf is not None:
+                self._grid_buf[0].destroy()
+                self._grid_buf[1].destroy()
+            # origin at the rect centre keeps float32 coordinates small (UTM)
+            ox, oy = (i0 + i1) / 2.0 * s, (j0 + j1) / 2.0 * s
+            # endpoints snapped to the cell range too, so the buffer is fully
+            # determined by `key` (stable while panning within the same cells)
+            gy0, gy1 = j0 * s - oy, j1 * s - oy
+            gx0, gx1 = i0 * s - ox, i1 * s - ox
+            verts = []
+            for i in range(i0, i1 + 1):
+                color = self.GRID_MAJOR if i % 5 == 0 else self.GRID_MINOR
+                verts.append((i * s - ox, gy0, color))
+                verts.append((i * s - ox, gy1, color))
+            for j in range(j0, j1 + 1):
+                color = self.GRID_MAJOR if j % 5 == 0 else self.GRID_MINOR
+                verts.append((gx0, j * s - oy, color))
+                verts.append((gx1, j * s - oy, color))
+            data = np.zeros(len(verts), dtype=VERTEX_DTYPE)
+            for k, (px, py, color) in enumerate(verts):
+                data["pos"][k] = (px, py)
+                data["rgba"][k] = color
+            vao, vbo, count = self._make_vao(data)
+            self._grid_origin = (ox, oy)
+            self._grid_buf = (vao, vbo, count, key)
+        vao, _vbo, count, _key = self._grid_buf
+        self._program.setUniformValue(self._loc_mvp,
+                                      self._mvp(*self._grid_origin))
+        vao.bind()
+        gl.glDrawArrays(GL_LINES, 0, count)
+        vao.release()
+
     def _view_world_rect(self) -> tuple[float, float, float, float]:
         x0, y1 = self.view.screen_to_world(0.0, 0.0)          # top-left
         x1, y0 = self.view.screen_to_world(self.width(), self.height())
@@ -475,7 +543,8 @@ class Viewport(QOpenGLWidget):
                 bx0, by0, bx1, by1 = batch.bounds[i]
                 if bx0 > x1 or bx1 < x0 or by0 > y1 or by1 < y0:
                     continue
-            px = max(1.0, rng.lineweight * PX_PER_MM)
+            # LWT off: draw thick entities as hairlines (AutoCAD's LWT toggle)
+            px = max(1.0, rng.lineweight * PX_PER_MM) if self.lwt_on else 1.0
             half_world = (px / 2.0) / self.view.scale
             prog.setUniformValue1f(self._loc_half_world, half_world)
             gl.glDrawArrays(GL_TRIANGLES, rng.first, rng.count)

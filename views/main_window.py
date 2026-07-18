@@ -403,36 +403,71 @@ class MainWindow(QMainWindow):
             tr("Press Esc or right-click to exit pan."))
         self.viewport.setFocus()
 
-    # -- drafting mode toggles (F3/F8/F10, classic status bar) ------------------
+    # -- drafting mode toggles (classic status bar buttons) ---------------------
+    # AutoCAD status bar: clickable toggle buttons + their F-keys.
+    _MODES = (
+        ("grid", "F7", "GRID", "Grid display"),
+        ("ortho", "F8", "ORTHO", "Ortho mode"),
+        ("polar", "F10", "POLAR", "Polar tracking"),
+        ("osnap", "F3", "OSNAP", "Object snap"),
+        ("lwt", None, "LWT", "Show lineweight"),
+    )
+
     def _build_mode_toggles(self) -> None:
         from PySide6.QtGui import QShortcut
+        from PySide6.QtWidgets import QToolButton
 
-        self._mode_labels: dict[str, QLabel] = {}
-        for key, name, label in (("osnap", "F3", "REFENT"),
-                                 ("ortho", "F8", "ORTO"),
-                                 ("polar", "F10", "POLAR")):
-            widget = QLabel(label)
-            widget.setToolTip(name)
-            self._mode_labels[key] = widget
-            self.statusBar().addPermanentWidget(widget)
-            QShortcut(QKeySequence(name), self,
-                      lambda k=key: self._toggle_mode(k))
-        self._update_mode_labels()
+        style = """
+        QToolButton { border: 1px solid transparent; padding: 1px 7px;
+            color: #6a6a6a; font-size: 11px; font-weight: bold; }
+        QToolButton:hover { border-color: #4a4a52; }
+        QToolButton:checked { color: #e8e8e8; background: #35424f;
+            border-color: #4a5a6a; border-radius: 2px; }
+        """
+        self._mode_buttons: dict[str, QToolButton] = {}
+        for key, fkey, label, tip in self._MODES:
+            b = QToolButton(self)
+            b.setText(tr(label))
+            b.setCheckable(True)
+            b.setStyleSheet(style)
+            b.setToolTip(tr(tip) + (f" ({fkey})" if fkey else ""))
+            b.setFocusPolicy(Qt.NoFocus)   # clicks must not steal the canvas
+            b.clicked.connect(lambda _=False, k=key: self._toggle_mode(k))
+            self._mode_buttons[key] = b
+            self.statusBar().addPermanentWidget(b)
+            if fkey:
+                QShortcut(QKeySequence(fkey), self,
+                          lambda k=key: self._toggle_mode(k))
+        self._update_mode_buttons()
+
+    def _mode_state(self, key: str) -> bool:
+        if key == "grid":
+            return self.viewport.grid_on
+        if key == "lwt":
+            return self.viewport.lwt_on
+        return getattr(self.tools, f"{key}_on")
 
     def _toggle_mode(self, which: str) -> None:
-        value = self.tools.toggle(which)
-        self._update_mode_labels()
-        names = {"osnap": tr("Object snap"), "ortho": tr("Ortho"),
-                 "polar": tr("Polar")}
+        if which == "grid":
+            self.viewport.grid_on = not self.viewport.grid_on
+            value = self.viewport.grid_on
+            self.viewport.update()
+        elif which == "lwt":
+            self.viewport.lwt_on = not self.viewport.lwt_on
+            value = self.viewport.lwt_on
+            self.viewport.update()
+        else:
+            value = self.tools.toggle(which)
+        self._update_mode_buttons()
+        names = {"grid": tr("Grid"), "osnap": tr("Object snap"),
+                 "ortho": tr("Ortho"), "polar": tr("Polar"),
+                 "lwt": tr("Lineweight display")}
         state = tr("on") if value else tr("off")
         self.statusBar().showMessage(f"{names[which]}: {state}", 2000)
 
-    def _update_mode_labels(self) -> None:
-        for key, widget in self._mode_labels.items():
-            active = getattr(self.tools, f"{key}_on")
-            widget.setStyleSheet(
-                "color: #e8e8e8; font-weight: bold;" if active
-                else "color: #6a6a6a;")
+    def _update_mode_buttons(self) -> None:
+        for key, b in self._mode_buttons.items():
+            b.setChecked(self._mode_state(key))
 
     # -- document plumbing for the tools ---------------------------------------
     def new_document(self) -> None:
@@ -490,10 +525,9 @@ class MainWindow(QMainWindow):
         """BricsCAD-style quick Layer + Properties bar on top."""
         from PySide6.QtWidgets import QComboBox, QLabel, QToolBar
 
+        # Same row as Modify (single top row), separated by the bar handle.
         bar = QToolBar(tr("Properties"), self)
         bar.setObjectName("props_toolbar")
-        self.insertToolBarBreak(self._modify_toolbar)  # new row under Modify...
-        self.addToolBarBreak(Qt.TopToolBarArea)
 
         # Compact popups: a drawing can carry hundreds of layers, so cap the
         # visible rows. "combobox-popup: 0" forces Qt's non-native popup,
