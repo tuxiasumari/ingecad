@@ -1,0 +1,33 @@
+Subject: in_dxf: rational HATCH spline read knots as weights (index overrun)
+
+A rational spline boundary edge stores num_knots knot values (DXF code 40)
+BEFORE the per-control-point weights (also code 40). The importer decided
+knot-vs-weight purely on `l >= 0 && is_rational`, so every knot after the
+first was routed to the weight branch: it overwrote control_points[0].weight,
+never advanced the knot index, and left `l` stuck at 0 so the knot-complete
+reset never fired. The control points then indexed from the wrong base and
+ran past num_control_points ("wrong l N control_points index"), aborting the
+whole DXF import (READ ERROR 0x800) -- e.g. Planos Constructivos, a spline
+with num_knots=18 / num_control_points=14.
+
+Track a knots_left counter (set at code 95, decremented per knot) and only
+treat code 40 as a weight once the knots are consumed. Planos now imports
+and round-trips clean through ODA; 254 unit tests green.
+
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+--- a/src/in_dxf.c
++++ b/src/in_dxf.c
+@@ add_HATCH locals
+   int l = -1;
++  int knots_left = 0; // spline knots pending; they precede rational weights
+@@ code 95 num_knots
+   o->paths[j].segs[k].num_knots = pair->value.l;
++  knots_left = (int)pair->value.l;
+@@ code 40 case 4 SPLINE
+-  if (l >= 0 && o->paths[j].segs[k].is_rational)
++  if (knots_left <= 0 && l >= 0 && o->paths[j].segs[k].is_rational)
+     { ...weight... }
+   else
+-    { l++; CHK_knots; knots[l] = val; ... }
++    { l++; CHK_knots; knots[l] = val; knots_left--; ... }
