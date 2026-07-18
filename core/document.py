@@ -23,6 +23,27 @@ class DocumentError(Exception):
     """A DXF file could not be loaded."""
 
 
+def _repair_material_dict(doc) -> None:
+    """Heal ACAD_MATERIAL entries that are dead handle strings.
+
+    LibreDWG-converted files can carry ByBlock/ByLayer/Global entries whose
+    MATERIAL objects never made it across; ezdxf then crashes on save
+    (``materials.get("ByLayer").dxf``). Dropping the dead strings and
+    recreating the required defaults is exactly what AutoCAD's own audit
+    does — the rest of the file stays untouched.
+    """
+    try:
+        materials = doc.materials
+        broken = [key for key, value in list(materials.object_dict.items())
+                  if isinstance(value, str)]
+        for key in broken:
+            materials.object_dict.discard(key)
+        if broken:
+            materials.create_required_entries()
+    except Exception:
+        pass    # never let a repair pass break an open
+
+
 class Document:
     """An open drawing: the ezdxf doc plus its filesystem identity."""
 
@@ -34,6 +55,7 @@ class Document:
         # dirty=True). Lets a background regen detect that the document
         # changed under it and that its result is stale.
         self.revision = 0
+        _repair_material_dict(doc)
 
     @property
     def dirty(self) -> bool:
