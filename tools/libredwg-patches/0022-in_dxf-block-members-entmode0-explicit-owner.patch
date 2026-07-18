@@ -1,0 +1,31 @@
+Subject: in_dxf: block members need entmode 0 (explicit owner), not 3
+
+A regular block's BlockBegin/members/ENDBLK were imported with entmode 3
+(0b11 = model space, no owner in the handle stream). Conformant readers
+(AutoCAD/BricsCAD/ODA) therefore resolve the BlockBegin owner to
+*Model_Space and report "AcDbBlockTableRecord(H): BlockBegin owner Id is
+invalid (<mspace handle>)", then auto-recover. AutoCAD/ODA write these as
+entmode 0 (explicit owner = the block record). Model space (entmode 2) and
+paper space (entmode 1) were already correct.
+
+Set regular block members to entmode 0 so the explicit owner (already held
+in ent->ownerhandle from DXF group 330) is written. On the COFOPRI cadastre
+the "owner invalid" warnings drop 10 -> 0; on casa bueno 45 -> 0; both still
+open and render identically in BricsCAD. Model-space entities keep entmode 2
+(verified: 929 mspace LINEs stay 2, 1385 block-member LINEs become 0, exactly
+matching ODA's ACAD2000 output). The entmode==3 uses in encode.c are all in
+encode_preR13_entities (r11 section routing), so r2000+ is unaffected. 254
+unit tests green.
+
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+--- a/src/in_dxf.c
++++ b/src/in_dxf.c
+@@ -13864,7 +13864,11 @@
+                   else
+-                    entmode = ent->entmode = 3; // regular block entities
++                    // Regular block members use entmode 0 (explicit owner =
++                    // block record), matching AutoCAD/ODA. entmode 3 (model
++                    // space) makes conformant readers resolve the BlockBegin
++                    // owner to *Model_Space -> "BlockBegin owner Id invalid".
++                    entmode = ent->entmode = 0; // regular block entities
