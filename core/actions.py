@@ -138,6 +138,9 @@ class AddEntityCommand(Command):
 
     def undo(self, document) -> None:
         if self.entity is not None:
+            # Handles destroyed here are recorded so the UI can hide the
+            # base-scene copies surgically instead of paying a full regen.
+            self.removed_handles = [self.entity.dxf.handle]
             document.modelspace().delete_entity(self.entity)
             self.entity = None
         document.dirty = True
@@ -286,6 +289,7 @@ class CopyEntitiesCommand(Command):
 
     def undo(self, document) -> None:
         msp = document.modelspace()
+        self.removed_handles = [c.dxf.handle for c in self.copies]
         for clone in self.copies:
             msp.delete_entity(clone)
         self.copies = []
@@ -313,6 +317,7 @@ class ReplaceEntitiesCommand(Command):
 
     def undo(self, document) -> None:
         msp = document.modelspace()
+        self.removed_handles = [e.dxf.handle for e in self.new_entities]
         for e in self.new_entities:
             msp.delete_entity(e)
         self.new_entities = []
@@ -361,6 +366,7 @@ class CreateBlockCommand(Command):
         doc = document.doc
         msp = document.modelspace()
         if self.insert is not None:
+            self.removed_handles = [self.insert.dxf.handle]
             msp.delete_entity(self.insert)
             self.insert = None
         for e in self.sources:
@@ -414,6 +420,8 @@ class ExplodeCommand(Command):
 
     def undo(self, document) -> None:
         msp = document.modelspace()
+        self.removed_handles = [v.dxf.handle
+                                for _o, parts in self.pieces for v in parts]
         for original, parts in self.pieces:
             for v in parts:
                 msp.delete_entity(v)
@@ -624,6 +632,7 @@ class PasteCommand(Command):
 
     def undo(self, document) -> None:
         msp = document.modelspace()
+        self.removed_handles = [c.dxf.handle for c in self.copies]
         for clone in self.copies:
             msp.delete_entity(clone)
         self.copies = []

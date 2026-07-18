@@ -369,6 +369,8 @@ class ToolController(QObject):
             elif isinstance(command, actions.ExplodeCommand):
                 for _orig, parts in command.pieces:
                     self._pending_render.extend(parts)
+            elif isinstance(command, actions.EraseCommand):
+                pass   # nothing new to show — the hide above IS the result
             else:
                 for attr in ("new_entities", "copies", "entities"):
                     extra = getattr(command, attr, None)
@@ -387,23 +389,40 @@ class ToolController(QObject):
         if self.index is not None:
             self.index.invalidate()
 
-    def after_history_change(self) -> None:
-        """Called by U/REDO. Rebuild the overlay; regen if base went stale."""
+    def after_history_change(self, command=None) -> None:
+        """Called by U/REDO with the command that crossed the boundary.
+
+        Instant feedback, no deferred-regen blank: stale base-scene copies of
+        everything the command touched are hidden surgically and the restored
+        or current entities ride the overlay; the full regen stays coalesced.
+        """
         self._invalidate_geometry()
-        tops = [(self.window.history._undo or [None])[-1],
-                (self.window.history._redo or [None])[-1]]
-        if any(t is not None and not isinstance(t, actions.AddEntityCommand)
-               for t in tops):
-            # an edit command crossed the undo boundary: base scene is stale
-            self._regen_timer.start()
-            return
-        alive = {c.entity.dxf.handle for c in self._draw_commands()
-                 if c.entity is not None}
-        if self._base_handles - alive:
-            # an entity already merged into the base scene was undone
+        if command is None or isinstance(command, actions.AddDimensionCommand):
+            # unknown scope / dimension block graphics: only a regen is right
             self.window.regen_in_memory()
-        else:
-            self._refresh_overlay()
+            return
+        touched = []
+        for attr in ("entities", "old_entities", "new_entities", "copies",
+                     "sources"):
+            touched.extend(getattr(command, attr, None) or [])
+        if getattr(command, "insert", None) is not None:
+            touched.append(command.insert)
+        if getattr(command, "entity", None) is not None:
+            touched.append(command.entity)
+        for _orig, parts in (getattr(command, "pieces", None) or []):
+            touched.extend(parts)
+        # hide stale base copies: entities the undo/redo just destroyed
+        # (recorded handles) plus every touched survivor's base-scene copy
+        hide = list(getattr(command, "removed_handles", None) or [])
+        hide += [e.dxf.handle for e in touched if e.is_alive]
+        if hide:
+            self.window.viewport.hide_handles(hide)
+        for e in touched:
+            if (e.is_alive and e.dxf.owner is not None
+                    and e not in self._pending_render):
+                self._pending_render.append(e)
+        self._refresh_overlay()
+        self._regen_timer.start()
 
     def _draw_commands(self):
         return [c for c in self.window.history._undo
@@ -413,13 +432,16 @@ class ToolController(QObject):
         document = self.window.document
         if document is None:
             return
+        # owner=None means the entity is unlinked from modelspace (erased,
+        # kept alive only for undo) — never draw those in the overlay.
         entities = [
             c.entity for c in self._draw_commands()
-            if c.entity is not None
+            if c.entity is not None and c.entity.dxf.owner is not None
             and c.entity.dxf.handle not in self._base_handles
         ]
         entities += [e for e in self._pending_render
-                     if e.is_alive and e.dxf.handle not in self._base_handles]
+                     if e.is_alive and e.dxf.owner is not None
+                     and e.dxf.handle not in self._base_handles]
         entities += self.grip_overlay_entities()
         scene = (build_scene_for_entities(document, entities, self._flatten)
                  if entities else None)

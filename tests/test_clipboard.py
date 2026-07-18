@@ -91,3 +91,39 @@ def test_erase_command_removes_and_undo_restores():
     assert len(h.msp.query("LINE")) == 0
     h.history.undo()
     assert len(h.msp.query("LINE")) == 1
+
+
+def test_erase_unlinks_for_instant_overlay_filter():
+    # The overlay filters by owner=None; erase must unlink, undo must relink.
+    h = Harness()
+    a = h.msp.add_line((0, 0), (2, 0))
+    h.history.execute(actions.EraseCommand([a]))
+    assert a.dxf.owner is None       # invisible to the overlay immediately
+    h.history.undo()
+    assert a.dxf.owner is not None   # visible again immediately
+
+
+def test_undo_records_removed_handles_for_surgical_hide():
+    # Commands whose undo destroys entities must record the handles so the
+    # UI can hide the base-scene copies without waiting for a regen.
+    h = Harness()
+    add = actions.add_line((0, 0), (3, 3))
+    h.history.execute(add)
+    handle = add.entity.dxf.handle
+    h.history.undo()
+    assert add.removed_handles == [handle]
+
+    clip = [h.msp.add_line((0, 0), (1, 0)).copy()]
+    paste = actions.PasteCommand(clip, 5, 5)
+    h.history.execute(paste)
+    handles = [c.dxf.handle for c in paste.copies]
+    h.history.undo()
+    assert paste.removed_handles == handles
+
+    c = h.msp.add_circle((5, 5), 2)
+    rep = actions.ReplaceEntitiesCommand(
+        "TRIM", [c], [lambda m: m.add_circle((5, 5), 1)])
+    h.history.execute(rep)
+    new_handles = [e.dxf.handle for e in rep.new_entities]
+    h.history.undo()
+    assert rep.removed_handles == new_handles

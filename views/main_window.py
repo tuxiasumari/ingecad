@@ -751,14 +751,14 @@ class MainWindow(QMainWindow):
         self.command_line.echo(
             tr("Undo: {name}", name=command.name) if command else tr("Nothing to undo"))
         if command is not None:
-            self.tools.after_history_change()
+            self.tools.after_history_change(command)
 
     def _cmd_redo(self, *args) -> None:
         command = self.history.redo()
         self.command_line.echo(
             tr("Redo: {name}", name=command.name) if command else tr("Nothing to redo"))
         if command is not None:
-            self.tools.after_history_change()
+            self.tools.after_history_change(command)
 
     def _build_status_bar(self) -> None:
         # Coordinate readout, bottom-left — the classic AutoCAD tracker.
