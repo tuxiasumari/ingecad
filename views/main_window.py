@@ -163,31 +163,83 @@ class MainWindow(QMainWindow):
         menu_bar = self._menu_bar
         menu_bar.clear()
 
+        def item(menu, label, slot, shortcut=None):
+            act = QAction(label, self)
+            if shortcut is not None:
+                act.setShortcut(shortcut)
+            act.triggered.connect(slot)
+            menu.addAction(act)
+            return act
+
+        def cmd_item(menu, label, name, icon=True):
+            from views.icons import command_icon
+            act = QAction(label, self)
+            if icon:
+                act.setIcon(command_icon(name))
+            act.triggered.connect(lambda _=False, n=name: self._invoke_command(n))
+            menu.addAction(act)
+            return act
+
+        # -- File -------------------------------------------------------------
         file_menu = menu_bar.addMenu(tr("File"))
-        open_act = QAction(tr("Open..."), self)
-        open_act.setShortcut(QKeySequence.Open)
-        open_act.triggered.connect(self._open_dialog)
-        file_menu.addAction(open_act)
-        save_as_act = QAction(tr("Save As..."), self)
-        save_as_act.setShortcut(QKeySequence.SaveAs)
-        save_as_act.triggered.connect(self._save_as_dialog)
-        file_menu.addAction(save_as_act)
+        item(file_menu, tr("New"), self.new_document, QKeySequence.New)
+        item(file_menu, tr("Open..."), self._open_dialog, QKeySequence.Open)
+        item(file_menu, tr("Save As..."), self._save_as_dialog, QKeySequence.SaveAs)
         file_menu.addSeparator()
-        quit_act = QAction(tr("Quit"), self)
-        quit_act.setShortcut(QKeySequence.Quit)
-        quit_act.triggered.connect(self.close)
-        file_menu.addAction(quit_act)
+        item(file_menu, tr("Quit"), self.close, QKeySequence.Quit)
 
+        # -- Edit -------------------------------------------------------------
+        edit_menu = menu_bar.addMenu(tr("Edit"))
+        item(edit_menu, tr("Undo"), self._cmd_undo, QKeySequence.Undo)
+        item(edit_menu, tr("Redo"), self._cmd_redo, QKeySequence.Redo)
+        edit_menu.addSeparator()
+        cmd_item(edit_menu, tr("Erase"), "ERASE")
+        cmd_item(edit_menu, tr("Move"), "MOVE")
+        cmd_item(edit_menu, tr("Copy"), "COPY")
+
+        # -- View -------------------------------------------------------------
         view_menu = menu_bar.addMenu(tr("View"))
-        extents_act = QAction(tr("Zoom Extents"), self)
-        extents_act.triggered.connect(self.viewport.zoom_extents)
-        view_menu.addAction(extents_act)
+        item(view_menu, tr("Zoom Extents"), self.viewport.zoom_extents)
+        item(view_menu, tr("Zoom Window"),
+             lambda: self._invoke_command("ZOOM"))
+        item(view_menu, tr("Regenerate"), self.regen_in_memory)
+        view_menu.addSeparator()
+        item(view_menu, tr("Layers panel"), self.toggle_layers_panel)
 
+        # -- Insert -----------------------------------------------------------
+        insert_menu = menu_bar.addMenu(tr("Insert"))
+        cmd_item(insert_menu, tr("Block..."), "INSERT")
+
+        # -- Format -----------------------------------------------------------
         format_menu = menu_bar.addMenu(tr("Format"))
-        layers_act = QAction(tr("Layers..."), self)
-        layers_act.triggered.connect(self.toggle_layers_panel)
-        format_menu.addAction(layers_act)
+        item(format_menu, tr("Layers..."), self.toggle_layers_panel)
+        cmd_item(format_menu, tr("Linetype..."), "LINETYPE", icon=False)
 
+        # -- Draw -------------------------------------------------------------
+        draw_menu = menu_bar.addMenu(tr("Draw"))
+        for label, name in ((tr("Line"), "LINE"), (tr("Polyline"), "PLINE"),
+                            (tr("Circle"), "CIRCLE"), (tr("Arc"), "ARC"),
+                            (tr("Rectangle"), "RECTANG"), (tr("Polygon"), "POLYGON")):
+            cmd_item(draw_menu, label, name)
+        draw_menu.addSeparator()
+        cmd_item(draw_menu, tr("Hatch"), "HATCH")
+
+        # -- Dimension --------------------------------------------------------
+        dim_menu = menu_bar.addMenu(tr("Dimension"))
+        cmd_item(dim_menu, tr("Area"), "AREA", icon=False)
+
+        # -- Modify -----------------------------------------------------------
+        modify_menu = menu_bar.addMenu(tr("Modify"))
+        for label, name in ((tr("Move"), "MOVE"), (tr("Copy"), "COPY"),
+                            (tr("Rotate"), "ROTATE"), (tr("Scale"), "SCALE"),
+                            (tr("Mirror"), "MIRROR"), (tr("Offset"), "OFFSET")):
+            cmd_item(modify_menu, label, name)
+        modify_menu.addSeparator()
+        for label, name in ((tr("Trim"), "TRIM"), (tr("Extend"), "EXTEND"),
+                            (tr("Fillet"), "FILLET"), (tr("Erase"), "ERASE")):
+            cmd_item(modify_menu, label, name)
+
+        # -- Tools ------------------------------------------------------------
         tools_menu = menu_bar.addMenu(tr("Tools"))
         lang_menu = tools_menu.addMenu(tr("Language"))
         lang_group = QActionGroup(self)
@@ -200,6 +252,25 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda _=False, c=code: self._set_language(c))
             lang_group.addAction(act)
             lang_menu.addAction(act)
+
+        # -- Window / Help ----------------------------------------------------
+        window_menu = menu_bar.addMenu(tr("Window"))
+        item(window_menu, tr("Layers panel"), self.toggle_layers_panel)
+        item(window_menu, tr("Command line"),
+             lambda: self.command_line.input.setFocus())
+
+        help_menu = menu_bar.addMenu(tr("Help"))
+        item(help_menu, tr("About IngeCAD"), self._show_about)
+
+    def _show_about(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        from core.version import __version__
+
+        QMessageBox.about(
+            self, tr("About IngeCAD"),
+            f"IngeCAD {__version__}\n"
+            + tr("Free 2D CAD for Linux in the spirit of classic AutoCAD.")
+            + "\nGPL-3.0-or-later · Marco Sumari Tellez")
 
     def _set_language(self, code: str) -> None:
         """Switch the UI language, persist it, and retranslate live."""
@@ -326,6 +397,89 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda _=False, n=name: self._invoke_command(n))
             self._modify_toolbar.addAction(act)
         self.addToolBar(Qt.TopToolBarArea, self._modify_toolbar)
+        self._build_props_toolbar()
+
+    def _build_props_toolbar(self) -> None:
+        """BricsCAD-style quick Layer + Properties bar on top."""
+        from PySide6.QtWidgets import QComboBox, QLabel, QToolBar
+
+        bar = QToolBar(tr("Properties"), self)
+        bar.setObjectName("props_toolbar")
+        self.insertToolBarBreak(self._modify_toolbar)  # new row under Modify...
+        self.addToolBarBreak(Qt.TopToolBarArea)
+
+        self._layer_combo = QComboBox(self)
+        self._layer_combo.setMinimumWidth(150)
+        self._layer_combo.setToolTip(tr("Current layer"))
+        self._layer_combo.activated.connect(self._on_layer_combo)
+        bar.addWidget(QLabel(" " + tr("Layer") + " "))
+        bar.addWidget(self._layer_combo)
+
+        self._color_combo = QComboBox(self)
+        self._color_combo.setMinimumWidth(110)
+        self._color_combo.setToolTip(tr("Color"))
+        self._color_combo.activated.connect(self._on_prop_color)
+        bar.addWidget(QLabel("  "))
+        bar.addWidget(self._color_combo)
+        self.addToolBar(Qt.TopToolBarArea, bar)
+        self._props_toolbar = bar
+        if self._layers_panel is not None:
+            self._layers_panel.changed.connect(self._refresh_props_toolbar)
+        self.tools.changed.connect(self._refresh_props_toolbar)
+        self._refresh_props_toolbar()
+
+    def _refresh_props_toolbar(self) -> None:
+        from core import layers as layer_ops
+        from views.properties_panel import BYLAYER_COLOR
+        from views.layers_panel import ACI_RGB
+
+        self._props_loading = True
+        self._layer_combo.clear()
+        self._color_combo.clear()
+        if self.document is not None:
+            names = [i.name for i in layer_ops.layer_list(self.document)]
+            self._layer_combo.addItems(names)
+            current = layer_ops.current_layer_name(self.document)
+            if current in names:
+                self._layer_combo.setCurrentIndex(names.index(current))
+        self._color_combo.addItem(tr("ByLayer"), BYLAYER_COLOR)
+        for aci in sorted(ACI_RGB):
+            self._color_combo.addItem(tr("Color {n}", n=aci), aci)
+        self._props_loading = False
+
+    def _on_layer_combo(self, index: int) -> None:
+        if getattr(self, "_props_loading", False) or self.document is None:
+            return
+        from core import layers as layer_ops
+
+        name = self._layer_combo.itemText(index)
+        selection = self.tools._selection_entities() if self.tools else []
+        if selection:
+            from core import actions
+            self.history.execute(actions.SetPropertyCommand(selection, "layer", name))
+            self.regen_in_memory()
+        else:
+            layer_ops.set_current_layer(self.document, name)
+        self._sync_panels()
+
+    def _on_prop_color(self, index: int) -> None:
+        if getattr(self, "_props_loading", False) or self.document is None:
+            return
+        selection = self.tools._selection_entities() if self.tools else []
+        if not selection:
+            return
+        from core import actions
+        self.history.execute(actions.SetPropertyCommand(
+            selection, "color", self._color_combo.itemData(index)))
+        self.regen_in_memory()
+        self._sync_panels()
+
+    def _sync_panels(self) -> None:
+        if self._layers_panel is not None:
+            self._layers_panel.refresh()
+        if getattr(self, "_properties_panel", None) is not None:
+            self._properties_panel.refresh()
+        self._refresh_props_toolbar()
 
     def _invoke_command(self, name: str) -> None:
         """A toolbar button runs a command like typing it: any running tool
@@ -444,7 +598,7 @@ class MainWindow(QMainWindow):
         # In-scope commands that land in later phases: answer honestly.
         for name, phase in (
             ("DIST", 4), ("EXPLODE", 6),
-            ("BLOCK", 6), ("INSERT", 6), ("HATCH", 6),
+            ("BLOCK", 6), ("INSERT", 6), ("HATCH", 6), ("LINETYPE", 6),
             ("AREA", 7), ("LIST", 7),
         ):
             d.register_future(name, phase)
@@ -577,6 +731,8 @@ class MainWindow(QMainWindow):
         self.tools.attach_document(document, flatten=scene.flatten)
         if self._layers_panel is not None:
             self._layers_panel.refresh()   # show the opened drawing's layers
+        if getattr(self, "_props_toolbar", None) is not None:
+            self._refresh_props_toolbar()
         self.setWindowTitle(f"IngeCAD — {document.name}")
         if scene.layout_name:
             self.statusBar().showMessage(
