@@ -223,15 +223,29 @@ class StylesPanel(QWidget):
                 props, _ICON.width(), _ICON.height())))
 
     def _clear_editor(self) -> None:
+        # Editors are single container widgets (below), so deleting the
+        # widget removes the whole form and its children — no layout leaks.
         while self._editor_layout.count():
             w = self._editor_layout.takeAt(0).widget()
             if w is not None:
+                w.setParent(None)
                 w.deleteLater()
 
-    def _header(self, text: str) -> None:
-        lbl = QLabel(text, self._editor_host)
-        lbl.setObjectName("head")
-        self._editor_layout.addWidget(lbl)
+    def _editor_box(self, title: str) -> QFormLayout:
+        """A fresh container widget with a header; returns its form layout."""
+        box = QWidget(self._editor_host)
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(3)
+        head = QLabel(title, box)
+        head.setObjectName("head")
+        v.addWidget(head)
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(3)
+        v.addLayout(form)
+        self._editor_layout.addWidget(box)
+        return form
 
     def _num(self, value, lo, hi, decimals) -> QDoubleSpinBox:
         sb = QDoubleSpinBox()
@@ -244,10 +258,7 @@ class StylesPanel(QWidget):
     # -- text editor ----------------------------------------------------------
     def _text_editor(self, name: str) -> None:
         props = style_ops.text_style_props(self._document, name)
-        self._header(tr("Text style: {n}", n=name))
-        form = QFormLayout()
-        form.setContentsMargins(0, 0, 0, 0)
-        form.setSpacing(3)
+        form = self._editor_box(tr("Text style: {n}", n=name))
         font = QComboBox()
         font.setEditable(True)
         font.addItems(COMMON_FONTS)
@@ -266,15 +277,11 @@ class StylesPanel(QWidget):
         form.addRow(tr("Height"), height)
         form.addRow(tr("Width factor"), width)
         form.addRow(tr("Oblique"), oblique)
-        self._editor_layout.addLayout(form)
 
     # -- dim editor -----------------------------------------------------------
     def _dim_editor(self, name: str) -> None:
         props = style_ops.dim_style_props(self._document, name)
-        self._header(tr("Dimension style: {n}", n=name))
-        form = QFormLayout()
-        form.setContentsMargins(0, 0, 0, 0)
-        form.setSpacing(3)
+        form = self._editor_box(tr("Dimension style: {n}", n=name))
         for var, label, dec in (("dimtxt", tr("Text height"), 2),
                                 ("dimasz", tr("Arrow size"), 2),
                                 ("dimscale", tr("Overall scale"), 3),
@@ -297,18 +304,22 @@ class StylesPanel(QWidget):
         txsty.currentTextChanged.connect(
             lambda v: self._apply_dim(name, {"dimtxsty": v}))
         form.addRow(tr("Text style"), txsty)
-        self._editor_layout.addLayout(form)
 
     # -- hatch ----------------------------------------------------------------
     def _hatch_editor(self) -> None:
+        box = QWidget(self._editor_host)
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(3)
         note = QLabel(
             tr("AutoCAD has no named hatch styles; set the default pattern."),
-            self._editor_host)
+            box)
         note.setWordWrap(True)
-        self._editor_layout.addWidget(note)
-        btn = QPushButton(tr("Choose pattern..."), self._editor_host)
+        v.addWidget(note)
+        btn = QPushButton(tr("Choose pattern..."), box)
         btn.clicked.connect(self._choose_hatch)
-        self._editor_layout.addWidget(btn)
+        v.addWidget(btn)
+        self._editor_layout.addWidget(box)
 
     def _choose_hatch(self) -> None:
         from tools.blocks import HatchTool
@@ -320,7 +331,7 @@ class StylesPanel(QWidget):
 
     # -- edits ----------------------------------------------------------------
     def _apply_text(self, name: str, props: dict) -> None:
-        if self._loading:
+        if self._loading or self._document is None:
             return
         self.window.history.execute(style_ops.SetTextStylePropsCommand(name, props))
         self.window.regen_in_memory()
@@ -329,7 +340,7 @@ class StylesPanel(QWidget):
         self.changed.emit()
 
     def _apply_dim(self, name: str, props: dict) -> None:
-        if self._loading:
+        if self._loading or self._document is None:
             return
         self.window.history.execute(style_ops.SetDimStylePropsCommand(name, props))
         self._refresh_row_icon(name)
@@ -339,6 +350,8 @@ class StylesPanel(QWidget):
     def _new(self) -> None:
         if self._cat == _HATCH:
             self._choose_hatch()
+            return
+        if self._document is None:
             return
         if self._cat == _DIM:
             existing = style_ops.dim_style_names(self._document)
@@ -363,6 +376,8 @@ class StylesPanel(QWidget):
         name = self._selected()
         if name is None or name == "Standard" or self._cat == _HATCH:
             return
+        if self._document is None:
+            return
         if self._cat == _TEXT:
             if name == style_ops.current_text_style(self._document):
                 return
@@ -376,7 +391,7 @@ class StylesPanel(QWidget):
 
     def _set_current(self) -> None:
         name = self._selected()
-        if name is None or self._cat == _HATCH:
+        if name is None or self._cat == _HATCH or self._document is None:
             return
         if self._cat == _TEXT:
             self.window.history.execute(style_ops.SetCurrentTextStyleCommand(name))

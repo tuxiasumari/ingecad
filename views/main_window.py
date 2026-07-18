@@ -164,7 +164,10 @@ class MainWindow(QMainWindow):
             event.type() == QEvent.MouseButtonPress
             and event.button() == Qt.LeftButton
             and isinstance(obj, QWidget)
-            and obj.window() is self
+            # Call QWidget.window() unbound: our panels store a `self.window`
+            # attribute (the MainWindow) that shadows the QWidget.window()
+            # method, so obj.window() would try to call the MainWindow.
+            and QWidget.window(obj) is self
             and not self.isMaximized()
         ):
             pos = self.mapFromGlobal(event.globalPosition().toPoint())
@@ -396,6 +399,10 @@ class MainWindow(QMainWindow):
         self.tools.attach_document(self.document)
         if self._layers_panel is not None:
             self._layers_panel.refresh()
+        if getattr(self, "_styles_panel", None) is not None:
+            self._styles_panel.refresh()
+        if getattr(self, "_properties_panel", None) is not None:
+            self._properties_panel.refresh()
         self.setWindowTitle(f"IngeCAD — {tr('Untitled')}")
 
     # -- classic toolbars (Draw left, Modify top) ------------------------------

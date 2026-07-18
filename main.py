@@ -93,11 +93,17 @@ def main() -> int:
 
     window = MainWindow()
     # A document passed on the command line (the OS file association's
-    # double-click hands it as argv[1]) opens right away.
+    # double-click hands it as argv[1]) opens right away; otherwise start with
+    # a blank drawing, like AutoCAD's Drawing1, so the panels and commands work
+    # from the first click instead of waiting for File > New.
+    opened = False
     if len(sys.argv) > 1:
         doc = Path(sys.argv[1])
         if doc.suffix.lower() in (".dxf", ".dwg") and doc.exists():
             window.open_path(doc)
+            opened = True
+    if not opened:
+        window.new_document()
     window.show()
     return app.exec()
 
