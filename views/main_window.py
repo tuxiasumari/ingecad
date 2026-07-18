@@ -408,15 +408,24 @@ class MainWindow(QMainWindow):
         self.insertToolBarBreak(self._modify_toolbar)  # new row under Modify...
         self.addToolBarBreak(Qt.TopToolBarArea)
 
+        # Compact popups: a drawing can carry hundreds of layers, so cap the
+        # visible rows (scroll for the rest) and tighten the row height.
+        combo_style = "QComboBox { font-size: 11px; } " \
+                      "QComboBox QAbstractItemView::item { min-height: 18px; }"
+
         self._layer_combo = QComboBox(self)
         self._layer_combo.setMinimumWidth(130)
-        self._layer_combo.setMaximumWidth(180)
+        self._layer_combo.setMaximumWidth(200)
+        self._layer_combo.setMaxVisibleItems(18)
+        self._layer_combo.setStyleSheet(combo_style)
         self._layer_combo.setToolTip(tr("Current layer"))
         self._layer_combo.activated.connect(self._on_layer_combo)
         bar.addWidget(self._layer_combo)
 
         self._color_combo = QComboBox(self)
         self._color_combo.setFixedWidth(96)
+        self._color_combo.setMaxVisibleItems(12)
+        self._color_combo.setStyleSheet(combo_style)
         self._color_combo.setToolTip(tr("Color"))
         self._color_combo.activated.connect(self._on_prop_color)
         bar.addSeparator()

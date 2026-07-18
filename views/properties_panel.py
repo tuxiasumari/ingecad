@@ -50,6 +50,9 @@ class PropertiesPanel(QWidget):
         self.color_cb = QComboBox(self)
         self.linetype_cb = QComboBox(self)
         self.lineweight_cb = QComboBox(self)
+        for cb in (self.layer_cb, self.color_cb, self.linetype_cb,
+                   self.lineweight_cb):
+            cb.setMaxVisibleItems(18)   # cap popup height on big drawings
         self.layer_cb.activated.connect(self._apply_layer)
         self.color_cb.activated.connect(self._apply_color)
         self.linetype_cb.activated.connect(self._apply_linetype)
