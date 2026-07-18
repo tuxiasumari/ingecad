@@ -650,8 +650,48 @@ def _param_on_segment(seg, point) -> float:
     return max(0.0, min(1.0, ((point[0] - x1) * dx + (point[1] - y1) * dy) / L2))
 
 
+class PasteTool(Tool):
+    """PASTECLIP (Ctrl+V): place the clipboard entities from a picked point."""
+
+    def start(self) -> None:
+        self.name = "PASTECLIP"
+        self._sources, self._base = (
+            self.ctx.services.clipboard_data() if self.ctx.services
+            else (None, None))
+        if not self._sources:
+            self.ctx.echo(tr("Clipboard is empty."))
+            self.ctx.finish()
+            return
+        self._bbox = self._source_bbox()
+        self.ctx.prompt(tr("Specify insertion point:"))
+
+    def _source_bbox(self):
+        try:
+            from ezdxf import bbox
+            ext = bbox.extents(self._sources)
+            return (ext.extmin.x, ext.extmin.y, ext.extmax.x, ext.extmax.y)
+        except Exception:
+            return None
+
+    def on_point(self, point: Point) -> None:
+        dx, dy = point[0] - self._base[0], point[1] - self._base[1]
+        self.ctx.execute(actions.PasteCommand(self._sources, dx, dy))
+        self.ctx.finish()
+
+    def preview_segments(self, cursor: Point):
+        # A rectangle of the pasted extents following the cursor.
+        if self._bbox is None:
+            return []
+        dx, dy = cursor[0] - self._base[0], cursor[1] - self._base[1]
+        x0, y0, x1, y1 = self._bbox
+        c = [(x0 + dx, y0 + dy), (x1 + dx, y0 + dy),
+             (x1 + dx, y1 + dy), (x0 + dx, y1 + dy)]
+        return [(c[i], c[(i + 1) % 4]) for i in range(4)]
+
+
 EDIT_TOOL_CLASSES = {
     "ERASE": EraseTool,
+    "PASTECLIP": PasteTool,
     "MOVE": MoveTool,
     "COPY": CopyTool,
     "ROTATE": RotateTool,

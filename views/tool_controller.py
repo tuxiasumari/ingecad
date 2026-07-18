@@ -48,6 +48,7 @@ class ToolController(QObject):
         self._cursor: Optional[tuple[float, float]] = None
         self._flatten = 0.01
         self._base_handles: set[str] = set()
+        self._clipboard = None   # (list[entity copies], base point) for paste
         # Selection state (idle noun set, or the set a tool is acquiring).
         self.index: Optional[GeometryIndex] = None
         self.selection: set[str] = set()
@@ -192,6 +193,45 @@ class ToolController(QObject):
         self.selection = set()
         self._window_anchor = None
         self.changed.emit()
+
+    # -- Delete / clipboard (noun-verb: act on the current selection) ----------
+    def delete_selection(self) -> bool:
+        """Supr/Delete: erase the selected objects (only when idle)."""
+        if self.tool is not None:
+            return False
+        entities = self._selection_entities()
+        if not entities:
+            return False
+        self._execute(actions.EraseCommand(entities))
+        self.clear_selection()
+        return True
+
+    def copy_selection(self, cut: bool = False) -> bool:
+        """Ctrl+C / Ctrl+X: stash copies of the selection with a base point."""
+        entities = self._selection_entities()
+        if not entities:
+            return False
+        try:
+            from ezdxf import bbox
+            ext = bbox.extents(entities)
+            base = (ext.extmin.x, ext.extmin.y)
+        except Exception:
+            base = (0.0, 0.0)
+        self._clipboard = ([e.copy() for e in entities], base)
+        if cut:
+            self._execute(actions.EraseCommand(entities))
+            self.clear_selection()
+        return True
+
+    def clipboard_data(self):
+        return self._clipboard if self._clipboard else (None, None)
+
+    def paste(self) -> None:
+        """Ctrl+V: place the clipboard entities from a picked point."""
+        if not self._clipboard:
+            self.window.command_line.echo(tr("Clipboard is empty."))
+            return
+        self.start_tool("PASTECLIP")
 
     # -- in-place text typing (DTEXT) -----------------------------------------
     def text_capturing(self) -> bool:

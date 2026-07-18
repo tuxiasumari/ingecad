@@ -597,6 +597,39 @@ def dim_diameter(center, radius: float, location) -> AddDimensionCommand:
     return AddDimensionCommand(factory)
 
 
+class PasteCommand(Command):
+    """Paste clipboard entities, translated so the base point lands on the
+    target. Each paste makes fresh copies, so the clipboard stays reusable."""
+
+    name = "PASTE"
+
+    def __init__(self, sources, dx: float, dy: float) -> None:
+        self.sources = list(sources)
+        self.dx = dx
+        self.dy = dy
+        self.copies: list = []
+
+    def do(self, document) -> None:
+        from ezdxf.math import Matrix44
+
+        msp = document.modelspace()
+        m = Matrix44.translate(self.dx, self.dy, 0.0)
+        self.copies = []
+        for e in self.sources:
+            clone = e.copy()
+            clone.transform(m)
+            msp.add_entity(clone)
+            self.copies.append(clone)
+        document.dirty = True
+
+    def undo(self, document) -> None:
+        msp = document.modelspace()
+        for clone in self.copies:
+            msp.delete_entity(clone)
+        self.copies = []
+        document.dirty = True
+
+
 def move_entities(entities, dx: float, dy: float) -> TransformCommand:
     from ezdxf.math import Matrix44
 

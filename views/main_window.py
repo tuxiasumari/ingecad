@@ -136,6 +136,23 @@ class MainWindow(QMainWindow):
             return
         super().keyPressEvent(event)
 
+    def _cmd_delete(self) -> None:
+        if self.tools.delete_selection():
+            self.viewport.update()
+
+    def _cmd_copy(self) -> None:
+        if self.tools.copy_selection():
+            self.command_line.echo(tr("Copied to clipboard."))
+
+    def _cmd_cut(self) -> None:
+        if self.tools.copy_selection(cut=True):
+            self.command_line.echo(tr("Cut to clipboard."))
+            self.viewport.update()
+
+    def _cmd_paste(self) -> None:
+        self.tools.paste()
+        self.viewport.setFocus()
+
     def eventFilter(self, obj, event) -> bool:
         # In-place TEXT typing captures the keyboard before the command line.
         if (event.type() == QEvent.KeyPress and self.tools.text_capturing()
@@ -211,6 +228,26 @@ class MainWindow(QMainWindow):
         edit_menu = menu_bar.addMenu(tr("Edit"))
         item(edit_menu, tr("Undo"), self._cmd_undo, QKeySequence.Undo)
         item(edit_menu, tr("Redo"), self._cmd_redo, QKeySequence.Redo)
+        from PySide6.QtGui import QShortcut
+        QShortcut(QKeySequence("Ctrl+Y"), self, self._cmd_redo)  # AutoCAD redo
+        edit_menu.addSeparator()
+
+        # Clipboard / Delete fire only when the drawing canvas has focus, so
+        # Ctrl+C/X/V and Delete keep their text meaning inside the command
+        # line and other input fields (added to the viewport widget).
+        def canvas_action(label, slot, seq):
+            act = QAction(label, self)
+            act.setShortcut(seq)
+            act.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+            act.triggered.connect(slot)
+            edit_menu.addAction(act)
+            self.viewport.addAction(act)
+            return act
+
+        canvas_action(tr("Cut"), self._cmd_cut, QKeySequence.Cut)
+        canvas_action(tr("Copy"), self._cmd_copy, QKeySequence.Copy)
+        canvas_action(tr("Paste"), self._cmd_paste, QKeySequence.Paste)
+        canvas_action(tr("Delete"), self._cmd_delete, QKeySequence.Delete)
         edit_menu.addSeparator()
         cmd_item(edit_menu, tr("Erase"), "ERASE")
         cmd_item(edit_menu, tr("Move"), "MOVE")
@@ -664,6 +701,9 @@ class MainWindow(QMainWindow):
         d.register("LAYER", lambda *a: self.toggle_layers_panel())
         d.register("STYLE", lambda *a: self.toggle_styles_panel())
         d.register("DIMSTYLE", lambda *a: self.toggle_styles_panel())
+        d.register("COPYCLIP", lambda *a: self._cmd_copy())
+        d.register("CUTCLIP", lambda *a: self._cmd_cut())
+        d.register("PASTECLIP", lambda *a: self._cmd_paste())
         # Phase 4 drawing + Phase 5 editing tools.
         for name in ("LINE", "CIRCLE", "ARC", "PLINE", "RECTANG", "POLYGON",
                      "ELLIPSE", "POINT", "TEXT", "MTEXT",
