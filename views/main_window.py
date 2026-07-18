@@ -232,6 +232,9 @@ class MainWindow(QMainWindow):
         format_menu = menu_bar.addMenu(tr("Format"))
         item(format_menu, tr("Layers..."), self.toggle_layers_panel)
         cmd_item(format_menu, tr("Linetype..."), "LINETYPE", icon=False)
+        format_menu.addSeparator()
+        item(format_menu, tr("Text Style..."), self.toggle_styles_panel)
+        item(format_menu, tr("Dimension Style..."), self.toggle_styles_panel)
 
         # -- Draw -------------------------------------------------------------
         draw_menu = menu_bar.addMenu(tr("Draw"))
@@ -541,11 +544,14 @@ class MainWindow(QMainWindow):
 
         from views.layers_panel import LayersPanel
         from views.properties_panel import PropertiesPanel
+        from views.styles_panel import StylesPanel
 
         self._layers_panel = LayersPanel(self)
         self._layers_panel.changed.connect(self.viewport.update)
         self._properties_panel = PropertiesPanel(self)
         self.tools.changed.connect(self._properties_panel.refresh)
+        self._styles_panel = StylesPanel(self)
+        self._styles_panel.changed.connect(self.viewport.update)
 
         from PySide6.QtWidgets import QHBoxLayout, QToolButton
 
@@ -554,6 +560,7 @@ class MainWindow(QMainWindow):
         tabs.setTabPosition(QTabWidget.South)   # tabs at the bottom (IngeTrazo)
         tabs.addTab(self._layers_panel, tr("Layers"))
         tabs.addTab(self._properties_panel, tr("Properties"))
+        tabs.addTab(self._styles_panel, tr("Styles"))
         collapse_btn = QToolButton(tabs)
         collapse_btn.setText("›")
         collapse_btn.setToolTip(tr("Collapse"))
@@ -611,6 +618,15 @@ class MainWindow(QMainWindow):
         self._sidebar_tabs.setCurrentWidget(self._layers_panel)
         self._layers_panel.refresh()
 
+    def toggle_styles_panel(self) -> None:
+        # STYLE / DIMSTYLE / Format menu focuses the Styles tab.
+        if getattr(self, "_styles_panel", None) is None:
+            return
+        if self._sidebar_collapsed:
+            self._expand_sidebar()
+        self._sidebar_tabs.setCurrentWidget(self._styles_panel)
+        self._styles_panel.refresh()
+
     def regen_in_memory(self) -> None:
         """Full regen of the in-memory document (edits included)."""
         if self.document is None:
@@ -634,6 +650,8 @@ class MainWindow(QMainWindow):
         d.register("QUIT", lambda *a: self.close())
         d.register("EXIT", lambda *a: self.close())
         d.register("LAYER", lambda *a: self.toggle_layers_panel())
+        d.register("STYLE", lambda *a: self.toggle_styles_panel())
+        d.register("DIMSTYLE", lambda *a: self.toggle_styles_panel())
         # Phase 4 drawing + Phase 5 editing tools.
         for name in ("LINE", "CIRCLE", "ARC", "PLINE", "RECTANG", "POLYGON",
                      "ELLIPSE", "POINT", "TEXT", "MTEXT",
@@ -776,6 +794,8 @@ class MainWindow(QMainWindow):
         self.tools.attach_document(document, flatten=scene.flatten)
         if self._layers_panel is not None:
             self._layers_panel.refresh()   # show the opened drawing's layers
+        if getattr(self, "_styles_panel", None) is not None:
+            self._styles_panel.refresh()   # and its text/dimension styles
         if getattr(self, "_props_toolbar", None) is not None:
             self._refresh_props_toolbar()
         self.setWindowTitle(f"IngeCAD — {document.name}")

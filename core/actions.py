@@ -680,11 +680,17 @@ def add_point(pos) -> AddEntityCommand:
         "POINT", lambda msp: msp.add_point((pos[0], pos[1])))
 
 
+def _current_text_style(msp) -> str:
+    """The document's current text style ($TEXTSTYLE), AutoCAD-style."""
+    name = msp.doc.header.get("$TEXTSTYLE", "Standard")
+    return name if name in msp.doc.styles else "Standard"
+
+
 def add_text(pos, text: str, height: float, rotation: float = 0.0) -> AddEntityCommand:
     def make(msp):
         entity = msp.add_text(
             text, height=height,
-            dxfattribs={"rotation": rotation})
+            dxfattribs={"rotation": rotation, "style": _current_text_style(msp)})
         entity.set_placement((pos[0], pos[1]))
         return entity
     return AddEntityCommand("TEXT", make)
@@ -696,7 +702,8 @@ def add_mtext(p1, p2, text: str, char_height: float) -> AddEntityCommand:
 
     def make(msp):
         m = msp.add_mtext(text, dxfattribs={"char_height": char_height,
-                                            "width": width})
+                                            "width": width,
+                                            "style": _current_text_style(msp)})
         m.set_location(top_left)
         return m
     return AddEntityCommand("MTEXT", make)
