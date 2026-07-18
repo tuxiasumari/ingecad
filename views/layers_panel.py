@@ -36,9 +36,38 @@ ACI_RGB = {
 }
 
 
+# Standard AutoCAD color names for indices 1-9.
+ACI_NAMES = {
+    1: "Red", 2: "Yellow", 3: "Green", 4: "Cyan", 5: "Blue",
+    6: "Magenta", 7: "White", 8: "Gray", 9: "Light gray",
+}
+
+
 def aci_to_qcolor(index: int) -> QColor:
     r, g, b = ACI_RGB.get(index, (160, 160, 160))
     return QColor(r, g, b)
+
+
+def swatch_icon(index: int, size: int = 13):
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    from PySide6.QtGui import QPainter, QPen
+    p = QPainter(pm)
+    p.fillRect(1, 1, size - 2, size - 2, aci_to_qcolor(index))
+    p.setPen(QPen(QColor(70, 70, 70)))
+    p.drawRect(1, 1, size - 3, size - 3)
+    p.end()
+    return QIcon(pm)
+
+
+def fill_color_combo(combo, include_bylayer: bool = True) -> None:
+    """Populate a color combo with swatches (not "Color N" text)."""
+    from views.properties_panel import BYLAYER_COLOR
+    if include_bylayer:
+        combo.addItem(tr("ByLayer"), BYLAYER_COLOR)
+    for aci in sorted(ACI_RGB):
+        name = tr(ACI_NAMES[aci]) if aci in ACI_NAMES else str(aci)
+        combo.addItem(swatch_icon(aci), name, aci)
 
 
 def nearest_aci(color: QColor) -> int:

@@ -409,17 +409,17 @@ class MainWindow(QMainWindow):
         self.addToolBarBreak(Qt.TopToolBarArea)
 
         self._layer_combo = QComboBox(self)
-        self._layer_combo.setMinimumWidth(150)
+        self._layer_combo.setMinimumWidth(130)
+        self._layer_combo.setMaximumWidth(180)
         self._layer_combo.setToolTip(tr("Current layer"))
         self._layer_combo.activated.connect(self._on_layer_combo)
-        bar.addWidget(QLabel(" " + tr("Layer") + " "))
         bar.addWidget(self._layer_combo)
 
         self._color_combo = QComboBox(self)
-        self._color_combo.setMinimumWidth(110)
+        self._color_combo.setFixedWidth(96)
         self._color_combo.setToolTip(tr("Color"))
         self._color_combo.activated.connect(self._on_prop_color)
-        bar.addWidget(QLabel("  "))
+        bar.addSeparator()
         bar.addWidget(self._color_combo)
         self.addToolBar(Qt.TopToolBarArea, bar)
         self._props_toolbar = bar
@@ -430,21 +430,20 @@ class MainWindow(QMainWindow):
 
     def _refresh_props_toolbar(self) -> None:
         from core import layers as layer_ops
-        from views.properties_panel import BYLAYER_COLOR
-        from views.layers_panel import ACI_RGB
+        from views.layers_panel import fill_color_combo, swatch_icon
 
         self._props_loading = True
         self._layer_combo.clear()
         self._color_combo.clear()
         if self.document is not None:
-            names = [i.name for i in layer_ops.layer_list(self.document)]
-            self._layer_combo.addItems(names)
+            for info in layer_ops.layer_list(self.document):
+                # small colour chip beside each layer name (BricsCAD look)
+                self._layer_combo.addItem(swatch_icon(info.color), info.name)
             current = layer_ops.current_layer_name(self.document)
-            if current in names:
-                self._layer_combo.setCurrentIndex(names.index(current))
-        self._color_combo.addItem(tr("ByLayer"), BYLAYER_COLOR)
-        for aci in sorted(ACI_RGB):
-            self._color_combo.addItem(tr("Color {n}", n=aci), aci)
+            idx = self._layer_combo.findText(current)
+            if idx >= 0:
+                self._layer_combo.setCurrentIndex(idx)
+        fill_color_combo(self._color_combo)
         self._props_loading = False
 
     def _on_layer_combo(self, index: int) -> None:

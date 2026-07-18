@@ -128,11 +128,9 @@ class PropertiesPanel(QWidget):
             self.layer_cb.setCurrentIndex(-1)   # varies
 
     def _fill_color(self, entities) -> None:
-        from views.layers_panel import ACI_RGB
+        from views.layers_panel import fill_color_combo
 
-        self.color_cb.addItem(tr("ByLayer"), BYLAYER_COLOR)
-        for aci in sorted(ACI_RGB):
-            self.color_cb.addItem(tr("Color {n}", n=aci), aci)
+        fill_color_combo(self.color_cb)   # swatches, not "Color N" text
         common = self._common(entities, lambda e: e.dxf.get("color", 256), None)
         idx = self.color_cb.findData(common)
         self.color_cb.setCurrentIndex(idx)
