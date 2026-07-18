@@ -1,0 +1,22 @@
+Subject: Convert UTF-8 DXF text to the target codepage for r2000 (mojibake)
+
+When importing a UTF-8 DXF into r2000 (or earlier), string fields were stored
+as raw UTF-8 bytes in single-byte codepage (TV) fields. AutoCAD/BricsCAD/ODA
+read those fields as the file codepage (cp1252), so accented and n-tilde
+letters became mojibake -- e.g. Á (UTF-8 C3 81) rendered as "Ã" + \U+0081,
+Ñ/Ó/É split into two wrong glyphs. Three spots left the UTF-8 untouched for
+< R_2007; all now convert to the DWG codepage via bit_utf8_to_TV:
+  1. dwg_api.c dwg_add_u8_input: the codepage branch was #if 0'd out (TODO);
+     enabled it (used for color names etc.).
+  2. dynapi.c dynapi_set_helper: the "// ascii" r2000 branch just copied the
+     bytes; convert when is_utf8 and codepage > 1. Threads a codepage arg
+     through the 5 callers. Fixes TEXT and every codepage TV string field.
+  3. in_dxf.c: MTEXT.text is assembled by a dedicated code-1/3 chunk handler
+     that strdup'd raw UTF-8; added dxf_postprocess_MTEXT to convert the
+     assembled text. Fixes MTEXT (the labelled titles / dimension texts).
+
+Verified with the ODA oracle: "PÉRGOLAS/DISEÑO/ÁREA/UBICACIÓN" now store the
+correct cp1252 bytes (É=C9, Ñ=D1, Á=C1, Ó=D3) and read back identical; r2007+
+(TU) and hatches unaffected. 254 unit tests green.
+
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
