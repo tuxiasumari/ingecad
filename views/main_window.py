@@ -68,10 +68,41 @@ class _OpenWorker(QObject):
             self.done.emit(document, scene)
 
 
+class RegenWorker(QThread):
+    """Rebuild the scene off the UI thread (a cadastre regen takes seconds).
+
+    The GIL makes concurrent reads memory-safe, but the user may edit while
+    we tessellate: the worker records the document revision it started from
+    and any exception mid-build is treated as "the doc moved under us" — the
+    result is discarded and the owner reruns once the edits settle. Visually
+    nothing is lost: edits show instantly through the surgical/overlay paths.
+    """
+
+    done = Signal(object, object, int, object)  # document, scene|None, rev, layout
+
+    def __init__(self, document: Document, layout: str, revision: int) -> None:
+        super().__init__()
+        self._document = document
+        self._layout = layout
+        self._revision = revision
+
+    def run(self) -> None:
+        from render.backend import build_scene
+
+        try:
+            scene = build_scene(self._document, self._layout)
+        except Exception:
+            scene = None    # doc mutated mid-read (or bad data): stale
+        self.done.emit(self._document, scene, self._revision, self._layout)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.document: Document | None = None
+        self._regen_worker: RegenWorker | None = None
+        self._regen_rerun = False
+        self._regen_zoom = False
         self._layers_dock = None
         self._layers_panel = None
         self._open_thread: QThread | None = None
@@ -722,15 +753,47 @@ class MainWindow(QMainWindow):
         self._sidebar_tabs.setCurrentWidget(self._styles_panel)
         self._styles_panel.refresh()
 
-    def regen_in_memory(self) -> None:
-        """Full regen of the in-memory document (edits included)."""
+    def regen_in_memory(self, zoom_after: bool = False) -> None:
+        """Rebuild the scene in a background thread; adopt when done.
+
+        Never blocks the UI: the old scene keeps showing (edits already
+        visible via overlay/surgical display) until the fresh one is ready.
+        If a regen is in flight, one rerun is queued instead of stacking.
+        """
         if self.document is None:
             return
-        from render.backend import build_scene
+        self._regen_zoom = self._regen_zoom or zoom_after
+        if self._regen_worker is not None:
+            self._regen_rerun = True
+            return
+        self._start_regen()
 
-        scene = build_scene(self.document, self._active_layout)
+    def _start_regen(self) -> None:
+        self._regen_rerun = False
+        worker = RegenWorker(self.document, self._active_layout,
+                             self.document.revision)
+        worker.done.connect(self._on_regen_done)
+        self._regen_worker = worker
+        worker.start()
+
+    def _on_regen_done(self, document, scene, revision, layout) -> None:
+        worker, self._regen_worker = self._regen_worker, None
+        if worker is not None:
+            worker.wait()   # thread has emitted; joins immediately
+        if document is not self.document:
+            return          # another file was opened meanwhile
+        stale = (self._regen_rerun
+                 or scene is None
+                 or revision != self.document.revision
+                 or layout != self._active_layout)
+        if stale:
+            self._start_regen()
+            return
         self.viewport.set_scene(scene)
         self.tools.mark_scene_merged()
+        if self._regen_zoom:
+            self._regen_zoom = False
+            self.viewport.zoom_extents()
 
     def _register_commands(self) -> None:
         d = self.dispatcher
@@ -792,7 +855,7 @@ class MainWindow(QMainWindow):
             self.command_line.echo(tr("Nothing to regenerate"))
             return
         self.regen_in_memory()
-        self.command_line.echo(tr("Regenerated."))
+        self.command_line.echo(tr("Regenerating..."))
 
     def _cmd_undo(self, *args) -> None:
         command = self.history.undo()
@@ -866,8 +929,7 @@ class MainWindow(QMainWindow):
             return
         self.tools.cancel()               # drop tool/selection across spaces
         self._active_layout = name
-        self.regen_in_memory()
-        self.viewport.zoom_extents()
+        self.regen_in_memory(zoom_after=True)   # zooms when the scene lands
         self._refresh_layout_tabs()
         if name != "Model":
             self.command_line.echo(

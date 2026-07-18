@@ -322,11 +322,18 @@ class ToolController(QObject):
 
     def cancel(self) -> None:
         if self._grip_drag is not None:
-            # Esc mid-grip: revert the entity to its pre-drag snapshot
+            # Esc mid-grip: revert the entity to its pre-drag snapshot. Its
+            # base-scene copy was hidden at grab time, so ride the overlay
+            # for instant feedback while the async regen rebuilds the base.
             handle, _i, _r, snap = self._grip_drag
             self._grip_drag = None
             snap.undo(self.window.document)
             self._invalidate_geometry()
+            self._pending_render.extend(
+                e for e in snap.entities
+                if e.is_alive and e.dxf.owner is not None
+                and e not in self._pending_render)
+            self._refresh_overlay()
             self.window.regen_in_memory()
             return
         if self.tool is not None:
@@ -365,7 +372,10 @@ class ToolController(QObject):
             # the results NOW through the overlay; the full regen is deferred
             old_handles = []
             if isinstance(command, (actions.EraseCommand,
-                                    actions.TransformCommand)):
+                                    actions.TransformCommand,
+                                    actions.SetPropertyCommand)):
+                # property edits too: hide the stale-look base copy and show
+                # the restyled entity via the overlay (async regen catches up)
                 old_handles = [e.dxf.handle for e in command.entities]
             elif isinstance(command, actions.ReplaceEntitiesCommand):
                 old_handles = [e.dxf.handle for e in command.old_entities]
@@ -408,7 +418,12 @@ class ToolController(QObject):
         """
         self._invalidate_geometry()
         if command is None or isinstance(command, actions.AddDimensionCommand):
-            # unknown scope / dimension block graphics: only a regen is right
+            # unknown scope / dimension block graphics: only a regen is right;
+            # hide what the undo just destroyed so it vanishes NOW (the regen
+            # runs in the background and lands later)
+            removed = getattr(command, "removed_handles", None)
+            if removed:
+                self.window.viewport.hide_handles(removed)
             self.window.regen_in_memory()
             return
         touched = []

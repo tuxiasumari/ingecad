@@ -540,6 +540,7 @@ class AddDimensionCommand(Command):
     def undo(self, document) -> None:
         msp = document.modelspace()
         if self.dim is not None and self.dim.is_alive:
+            self.removed_handles = [self.dim.dxf.handle]
             msp.delete_entity(self.dim)
         if self._block_name and self._block_name in document.doc.blocks:
             try:

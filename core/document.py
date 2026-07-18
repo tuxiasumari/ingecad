@@ -29,7 +29,21 @@ class Document:
     def __init__(self, doc: Drawing, path: Optional[Path] = None) -> None:
         self.doc = doc
         self.path = path
-        self.dirty = False
+        self._dirty = False
+        # Monotonic edit counter: every mutation bumps it (all Commands set
+        # dirty=True). Lets a background regen detect that the document
+        # changed under it and that its result is stale.
+        self.revision = 0
+
+    @property
+    def dirty(self) -> bool:
+        return self._dirty
+
+    @dirty.setter
+    def dirty(self, value: bool) -> None:
+        if value:
+            self.revision += 1
+        self._dirty = value
 
     @classmethod
     def new(cls) -> "Document":

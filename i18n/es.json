@@ -184,7 +184,7 @@
   "Polar": "Polar",
   "on": "activado",
   "off": "desactivado",
-  "Regenerated.": "Regenerado.",
+  "Regenerating...": "Regenerando...",
   "Select objects (Enter when done):": "Seleccione objetos (Enter para terminar):",
   "{count} selected.": "{count} seleccionados.",
   "{count} erased.": "{count} borrados.",
