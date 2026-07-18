@@ -478,6 +478,8 @@ class MainWindow(QMainWindow):
         self.viewport.set_scene(scene)
         self.viewport.zoom_extents()
         self.tools.attach_document(document, flatten=scene.flatten)
+        if self._layers_panel is not None:
+            self._layers_panel.refresh()   # show the opened drawing's layers
         self.setWindowTitle(f"IngeCAD — {document.name}")
         if scene.layout_name:
             self.statusBar().showMessage(
