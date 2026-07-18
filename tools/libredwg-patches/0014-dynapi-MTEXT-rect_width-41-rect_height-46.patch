@@ -1,0 +1,41 @@
+Subject: gen-dynapi/dynapi: MTEXT rect_width is 41 and rect_height is 46
+
+dynapi.c gave MTEXT rect_width AND rect_height the DXF code of a *later*
+re-read in the annotative "redundant fields" block (rect_width 40,
+rect_height 41) instead of the canonical primary object (rect_width 41,
+rect_height 46). The field->dxf map in gen-dynapi.pl is keyed per entity by
+name, so the redundant re-read clobbered the real codes. Effects: char
+height (group 40) landed in rect_width and text_height stayed 0 (MTEXT
+rendered at a huge fallback size), and reference width (group 41) landed in
+rect_height so the defined width was lost. Keep the FIRST dxf code per
+field in the generator, and correct dynapi.c: rect_width 41, rect_height 46.
+
+Verified: MTEXT (height + width) decodes byte-identical to ODA's ACAD2000
+output; all 254 unit tests pass.
+
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+--- a/src/gen-dynapi.pl
++++ b/src/gen-dynapi.pl
+@@ -460,7 +460,12 @@
+             }
+ 
+-            # (scale.x, 41) as is
+-            $DXF{$n}->{$f} = $dxf  if $dxf;
++            # (scale.x, 41) as is.
++            # Keep the FIRST dxf code for a field: some entities re-read a
++            # field in a later (embedded/redundant) context with a different
++            # group code (e.g. MTEXT rect_width/rect_height re-appear with
++            # 40/41 in the annotative context), which used to clobber the
++            # canonical mapping and mis-import the field.
++            $DXF{$n}->{$f} = $dxf  if $dxf and !exists $DXF{$n}->{$f};
+
+--- a/src/dynapi.c
++++ b/src/dynapi.c
+@@ -2683,9 +2683,9 @@
+   { "rect_height",	"BD", sizeof (BITCODE_BD),  OFF (struct _dwg_entity_MTEXT, rect_height),
+-    0,0,0, 41 },
++    0,0,0, 46 },
+   { "rect_width",	"BD", sizeof (BITCODE_BD),  OFF (struct _dwg_entity_MTEXT, rect_width),
+-    0,0,0, 40 },
++    0,0,0, 41 },
