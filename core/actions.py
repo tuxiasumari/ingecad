@@ -416,3 +416,35 @@ def _restore_entity(entity, snapshot) -> None:
         entity.dxf.set(key, value)
     if entity.dxftype() == "LWPOLYLINE":
         entity.set_points(snapshot.get_points("xyseb"), format="xyseb")
+
+
+class SetPropertyCommand(Command):
+    """Set a DXF property (layer/color/linetype/lineweight) on entities.
+
+    Color/linetype/lineweight take AutoCAD's ByLayer sentinels: color 256 =
+    ByLayer, linetype "ByLayer", lineweight -1 = ByLayer. Undo restores each
+    entity's previous value individually.
+    """
+
+    name = "properties"
+
+    def __init__(self, entities, prop: str, value) -> None:
+        self.entities = list(entities)
+        self.prop = prop
+        self.value = value
+        self._old = []
+
+    def do(self, document) -> None:
+        self._old = []
+        for e in self.entities:
+            self._old.append(e.dxf.get(self.prop, None))
+            e.dxf.set(self.prop, self.value)
+        document.dirty = True
+
+    def undo(self, document) -> None:
+        for e, old in zip(self.entities, self._old):
+            if old is None:
+                e.dxf.discard(self.prop)
+            else:
+                e.dxf.set(self.prop, old)
+        document.dirty = True

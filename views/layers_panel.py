@@ -73,31 +73,6 @@ class LayersPanel(QWidget):
         self.window = window
         self.setObjectName("LayersPanel")
         self.setStyleSheet(_PANEL_STYLE)
-        self._collapsed = False
-
-        # -- collapsed strip: a single vertical expand button ------------------
-        self._strip = QToolButton(self)
-        self._strip.setObjectName("sideLabel")
-        # Vertical stack of characters fits the narrow collapsed strip.
-        self._strip.setText("‹\n" + "\n".join(tr("Layers")))
-        self._strip.setToolTip(tr("Expand"))
-        self._strip.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        self._strip.clicked.connect(self.expand)
-        self._strip.setVisible(False)
-        self._strip.setFixedWidth(COLLAPSED_WIDTH)
-
-        # -- header bar: title + collapse button -------------------------------
-        title = QLabel(tr("Layers"), self)
-        title.setStyleSheet("font-weight: bold; color: #c8c8c8;")
-        self._collapse_btn = QToolButton(self)
-        self._collapse_btn.setText("›")
-        self._collapse_btn.setToolTip(tr("Collapse"))
-        self._collapse_btn.clicked.connect(self.collapse)
-        header_bar = QHBoxLayout()
-        header_bar.setContentsMargins(4, 2, 2, 2)
-        header_bar.addWidget(title)
-        header_bar.addStretch()
-        header_bar.addWidget(self._collapse_btn)
 
         # Columns: Cur, Name, On, Freeze, Lock, Color, Linetype, Lineweight
         self.table = QTableWidget(0, 8, self)
@@ -134,25 +109,17 @@ class LayersPanel(QWidget):
         cur_btn = self._tool_button("✓", tr("Set current"),
                                     self._set_current_selected)
         buttons = QHBoxLayout()
-        buttons.setContentsMargins(2, 0, 2, 0)
+        buttons.setContentsMargins(2, 2, 2, 0)
         buttons.setSpacing(1)
         for b in (new_btn, del_btn, cur_btn):
             buttons.addWidget(b)
         buttons.addStretch()
 
-        self._content = QWidget(self)
-        content_layout = QVBoxLayout(self._content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(1)
-        content_layout.addLayout(header_bar)
-        content_layout.addLayout(buttons)
-        content_layout.addWidget(self.table)
-
-        outer = QHBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        outer.addWidget(self._strip)
-        outer.addWidget(self._content)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(1)
+        layout.addLayout(buttons)
+        layout.addWidget(self.table)
 
         self._loading = False
         self.refresh()
@@ -163,26 +130,6 @@ class LayersPanel(QWidget):
         btn.setToolTip(tip)
         btn.clicked.connect(slot)
         return btn
-
-    # -- collapse / expand ----------------------------------------------------
-    def collapse(self) -> None:
-        self._collapsed = True
-        self._content.setVisible(False)
-        self._strip.setVisible(True)
-        dock = self.parentWidget()
-        if dock is not None:
-            dock.setFixedWidth(COLLAPSED_WIDTH)
-
-    def expand(self) -> None:
-        self._collapsed = False
-        self._strip.setVisible(False)
-        self._content.setVisible(True)
-        dock = self.parentWidget()
-        if dock is not None:
-            dock.setMinimumWidth(250)
-            dock.setMaximumWidth(16777215)
-            dock.resize(280, dock.height())
-        self.refresh()
 
     @staticmethod
     def _header_item(text: str, tooltip: str) -> QTableWidgetItem:

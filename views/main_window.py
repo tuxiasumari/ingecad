@@ -291,29 +291,80 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"IngeCAD — {tr('Untitled')}")
 
     def _build_sidebar(self) -> None:
-        """Persistent right sidebar with the layers panel (always docked)."""
+        """Persistent right sidebar: Layers | Properties tabs (bottom tabs)."""
+        from PySide6.QtWidgets import QTabWidget
+
         from views.layers_panel import LayersPanel
+        from views.properties_panel import PropertiesPanel
 
         self._layers_panel = LayersPanel(self)
         self._layers_panel.changed.connect(self.viewport.update)
+        self._properties_panel = PropertiesPanel(self)
+        self.tools.changed.connect(self._properties_panel.refresh)
+
+        from PySide6.QtWidgets import QHBoxLayout, QToolButton
+
+        tabs = QTabWidget(self)
+        tabs.setObjectName("sidebar_tabs")
+        tabs.setTabPosition(QTabWidget.South)   # tabs at the bottom (IngeTrazo)
+        tabs.addTab(self._layers_panel, tr("Layers"))
+        tabs.addTab(self._properties_panel, tr("Properties"))
+        collapse_btn = QToolButton(tabs)
+        collapse_btn.setText("›")
+        collapse_btn.setToolTip(tr("Collapse"))
+        collapse_btn.clicked.connect(self._collapse_sidebar)
+        tabs.setCornerWidget(collapse_btn, Qt.TopRightCorner)
+        self._sidebar_tabs = tabs
+        self._sidebar_collapsed = False
+
+        # Thin expand strip shown when collapsed.
+        self._sidebar_strip = QToolButton(self)
+        self._sidebar_strip.setText("‹")
+        self._sidebar_strip.setToolTip(tr("Expand"))
+        self._sidebar_strip.clicked.connect(self._expand_sidebar)
+        self._sidebar_strip.setVisible(False)
+        self._sidebar_strip.setFixedWidth(20)
+
+        container = QWidget(self)
+        clay = QHBoxLayout(container)
+        clay.setContentsMargins(0, 0, 0, 0)
+        clay.setSpacing(0)
+        clay.addWidget(self._sidebar_strip)
+        clay.addWidget(tabs)
+
         dock = QDockWidget(self)
-        dock.setObjectName("layers_dock")
-        dock.setTitleBarWidget(QWidget(dock))   # no dock chrome: panel owns it
+        dock.setObjectName("sidebar_dock")
+        dock.setTitleBarWidget(QWidget(dock))   # no dock chrome
         dock.setFeatures(QDockWidget.NoDockWidgetFeatures)  # fixed, always there
-        dock.setWidget(self._layers_panel)
+        dock.setWidget(container)
         dock.setMinimumWidth(250)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
         self.resizeDocks([dock], [280], Qt.Horizontal)
         self._layers_dock = dock
 
+    def _collapse_sidebar(self) -> None:
+        self._sidebar_collapsed = True
+        self._sidebar_tabs.setVisible(False)
+        self._sidebar_strip.setVisible(True)
+        self._layers_dock.setMinimumWidth(20)
+        self._layers_dock.setFixedWidth(20)
+
+    def _expand_sidebar(self) -> None:
+        self._sidebar_collapsed = False
+        self._sidebar_strip.setVisible(False)
+        self._sidebar_tabs.setVisible(True)
+        self._layers_dock.setFixedWidth(280)
+        self._layers_dock.setMinimumWidth(250)
+        self._layers_dock.setMaximumWidth(16777215)
+
     def toggle_layers_panel(self) -> None:
-        # LA / Format>Layers expands the sidebar if it was collapsed.
+        # LA / Format>Layers focuses the Layers tab and refreshes it.
         if self._layers_panel is None:
             return
-        if self._layers_panel._collapsed:
-            self._layers_panel.expand()
-        else:
-            self._layers_panel.refresh()
+        if self._sidebar_collapsed:
+            self._expand_sidebar()
+        self._sidebar_tabs.setCurrentWidget(self._layers_panel)
+        self._layers_panel.refresh()
 
     def regen_in_memory(self) -> None:
         """Full regen of the in-memory document (edits included)."""

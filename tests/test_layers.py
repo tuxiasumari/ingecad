@@ -110,3 +110,26 @@ def test_unique_layer_name():
     doc, _ = make_doc()
     doc.doc.layers.add("Layer1")
     assert L.unique_layer_name(doc, "Layer") == "Layer2"
+
+
+# -- entity properties (SetPropertyCommand) ------------------------------------
+
+def test_set_entity_property_undo():
+    doc, h = make_doc()
+    doc.doc.layers.add("MUROS", color=4)
+    line = doc.modelspace().add_line((0, 0), (10, 0))
+    circle = doc.modelspace().add_circle((0, 0), 5)
+
+    h.execute(actions.SetPropertyCommand([line, circle], "layer", "MUROS"))
+    assert line.dxf.layer == "MUROS" and circle.dxf.layer == "MUROS"
+    h.execute(actions.SetPropertyCommand([line], "color", 1))
+    assert line.dxf.color == 1
+    h.execute(actions.SetPropertyCommand([line], "lineweight", 50))
+    assert line.dxf.lineweight == 50
+
+    h.undo()   # lineweight
+    assert line.dxf.get("lineweight", None) in (None, -1)
+    h.undo()   # color
+    assert line.dxf.get("color", 256) in (256, 7)
+    h.undo()   # layer back to 0 for both
+    assert line.dxf.layer == "0" and circle.dxf.layer == "0"
