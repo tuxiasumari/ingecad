@@ -409,8 +409,10 @@ class MainWindow(QMainWindow):
         self.addToolBarBreak(Qt.TopToolBarArea)
 
         # Compact popups: a drawing can carry hundreds of layers, so cap the
-        # visible rows (scroll for the rest) and tighten the row height.
-        combo_style = "QComboBox { font-size: 11px; } " \
+        # visible rows. "combobox-popup: 0" forces Qt's non-native popup,
+        # which is the one that actually honours setMaxVisibleItems (the
+        # native popup ignores it and spans the whole screen).
+        combo_style = "QComboBox { font-size: 11px; combobox-popup: 0; } " \
                       "QComboBox QAbstractItemView::item { min-height: 18px; }"
 
         self._layer_combo = QComboBox(self)
