@@ -22,6 +22,16 @@ def test_new_doc_has_only_standard():
     assert st.dim_style_names(doc) == ["Standard"]
 
 
+def test_document_new_seeds_iso25():
+    doc = Document.new()
+    assert "ISO-25" in st.dim_style_names(doc)
+    # $DIMSTYLE now points at a real table entry, not a phantom name
+    assert st.current_dim_style(doc) in st.dim_style_names(doc)
+    p = st.dim_style_props(doc, "ISO-25")
+    assert p["dimtxt"] == pytest.approx(2.5)
+    assert p["dimasz"] == pytest.approx(2.5)
+
+
 def test_create_and_delete_text_style():
     doc, h = _doc()
     h.execute(st.NewTextStyleCommand("Titulos", {"font": "arial.ttf",

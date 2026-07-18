@@ -24,6 +24,25 @@ DIM_VARS = {
 }
 
 
+# AutoCAD's metric ISO-25 dimension style — the acadiso default. Seeded into
+# every new drawing so the panel shows an established style (and the $DIMSTYLE
+# header, which ezdxf defaults to "ISO-25", points at a real table entry).
+ISO25_DIM = {
+    "dimtxt": 2.5, "dimasz": 2.5, "dimexe": 1.25, "dimexo": 0.625,
+    "dimgap": 0.625, "dimdec": 2, "dimscale": 1.0, "dimtad": 1,
+    "dimtxsty": "Standard", "dimlfac": 1.0,
+}
+
+
+def install_default_styles(document) -> None:
+    """Seed the standard styles a fresh AutoCAD drawing carries (idempotent)."""
+    doc = document.doc
+    if "ISO-25" not in doc.dimstyles:
+        doc.dimstyles.new("ISO-25", dxfattribs=dict(ISO25_DIM))
+    if doc.header.get("$DIMSTYLE", "Standard") not in doc.dimstyles:
+        doc.header["$DIMSTYLE"] = "ISO-25"
+
+
 # -- queries ------------------------------------------------------------------
 
 def text_style_names(document) -> list[str]:

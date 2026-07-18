@@ -35,9 +35,13 @@ class Document:
     def new(cls) -> "Document":
         # Load the standard linetypes (needed for linetype rendering) but not
         # ezdxf's full style/dimstyle setup — a new AutoCAD drawing carries
-        # only the "Standard" text and dimension styles, and the Styles panel
-        # should reflect that instead of dozens of OpenSans/EZ_* entries.
-        return cls(ezdxf.new("R2018", setup=["linetypes"]))
+        # only a couple of established styles, not dozens of OpenSans/EZ_*
+        # entries. install_default_styles seeds the metric ISO-25 dim style.
+        from core import styles as _styles
+
+        document = cls(ezdxf.new("R2018", setup=["linetypes"]))
+        _styles.install_default_styles(document)
+        return document
 
     @classmethod
     def load(cls, path: Path | str) -> "Document":
