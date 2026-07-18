@@ -1,0 +1,18 @@
+Subject: in_dxf: HATCH.has_derived must OR every path flag, not just the last
+
+has_derived controls whether pixel_size is written/read. in_dxf set it with
+`o->has_derived = flag & 4` per path, so it ended up holding only the LAST
+path's derived bit. The decoder computes has_derived as the OR of every
+path flag's 0x4 bit. When an earlier path was derived but the last was not
+(e.g. flags [7, 24]), the encoder skipped pixel_size while the reader
+expected it -> the 64-bit gap corrupted num_seeds and the HATCH became
+unreadable. Accumulate with |=.
+
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+--- a/src/in_dxf.c
++++ b/src/in_dxf.c
+@@ HATCH path flag 92
+           is_plpath = pair->value.u & 2;
+-          o->has_derived = pair->value.u & 4;
++          o->has_derived |= (pair->value.u & 4) ? 1 : 0;

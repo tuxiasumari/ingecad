@@ -1,0 +1,29 @@
+Subject: HATCH: spline-edge fit points/tangents only when num_fitpts > 0
+
+For a spline boundary edge (R2010+), the decoder read num_fitpts and then
+ALWAYS read the two 2RD tangents. AutoCAD writes the fit points and the
+start/end tangents only when the spline was defined by fit points
+(num_fitpts > 0). Reading them unconditionally overran the object and made
+the decoder lose bit-sync right after the first spline edge -- it silently
+dropped every remaining edge and path of that hatch. dwg2dxf then emitted a
+DXF whose 91/93 counts disagreed with the data present, and dxf2dwg baked
+that inconsistency into an r2000 file that AutoCAD/BricsCAD/ODA reject
+("Object improperly read: <AcDbHatch>"). Guard the fit-point/tangent block
+with `if (num_fitpts)`. On Detalles Plaza Yanque a spline-bounded hatch now
+decodes all 3 paths / 6 edges instead of 2 / 3. 254 unit tests green.
+
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+--- a/src/dwg.spec
++++ b/src/dwg.spec
+@@ SINCE (R_2010) spline edge
+                           SUB_FIELD_BL (seg, num_fitpts, 97);
+-                          FIELD_2RD_VECTOR (seg.fitpts, seg.num_fitpts, 11);
+-                          SUB_FIELD_2RD (seg, start_tangent, 12);
+-                          SUB_FIELD_2RD (seg, end_tangent, 13);
++                          if (FIELD_VALUE (seg.num_fitpts))
++                            {
++                              FIELD_2RD_VECTOR (seg.fitpts, seg.num_fitpts, 11);
++                              SUB_FIELD_2RD (seg, start_tangent, 12);
++                              SUB_FIELD_2RD (seg, end_tangent, 13);
++                            }
