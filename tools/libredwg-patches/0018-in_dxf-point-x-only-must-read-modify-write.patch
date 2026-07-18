@@ -1,0 +1,30 @@
+Subject: in_dxf: setting only a point's .x must keep its .y/.z
+
+When an entity DXF carries a point field's base group (e.g. INSERT group
+41 = xscale) but omits the +1/+2 groups (42/43, y/z scale = 1, omitted by
+ezdxf and AutoCAD), the generic importer set pt.x on a reused, stale `pt`
+and wrote the whole point — leaking the PREVIOUS point's y/z (the
+insertion point) into this field. An INSERT mirrored in X (xscale -1)
+became scale (-1, ins_pt.y, ins_pt.z): a degenerate huge/zero scale that
+AutoCAD/BricsCAD render as giant streaks. Read-modify-write so the missing
+components keep their (already-defaulted) values; present 42/43 pairs
+overwrite them as before.
+
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+--- a/src/in_dxf.c
++++ b/src/in_dxf.c
+@@ -12383,7 +12383,13 @@ new_object (char *restrict name, char *restrict dxfname,
+                                    || strEQc (f->type, "BE")))
+                         {
+-                          pt.x = pair->value.d;
++                          // Read-modify-write: keep .y/.z. Setting only .x
++                          // from a stale reused `pt` leaked the previous
++                          // point's y/z (e.g. INSERT group 41 with 42/43
++                          // omitted got scale.y/z from the insertion point).
++                          pt.x = pt.y = pt.z = 0.0;
++                          dwg_dynapi_entity_value (_obj, obj->name, f->name,
++                                                   &pt, NULL);
++                          pt.x = pair->value.d;
+                           dwg_dynapi_entity_set_value (_obj, obj->name,
+                                                        f->name, &pt, 1);
