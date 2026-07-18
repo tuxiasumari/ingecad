@@ -1,0 +1,26 @@
+Subject: in_dxf: MTEXT R2018 embedded object clobbered text_height (giant text)
+
+An MTEXT converted from r2018 carries a trailing "Embedded Object" (DXF code
+101, the column/annotation-scale data). Inside it, code 40 means rect_width
+and 41 means rect_height -- but in the MAIN MTEXT those codes are text_height
+and rect_width. in_dxf set an `in_embedobj` flag on code 101 but never
+consulted it, so the generic field matcher happily reassigned the embedded
+object's code 40 (rect_width, e.g. 34.9) onto the main MTEXT.text_height
+(overwriting 2.5) and code 41 onto rect_width (0). The text then rendered at
+~14x scale in AutoCAD/BricsCAD -- every labelled detail/dimension text came
+out giant. r2000 has no embedded object, so skip its fields once in_embedobj
+is set. On Detalles Plaza Yanque this drops 120 giant-height MTEXT to 0;
+normal MTEXT (no embedded object) is unchanged. 254 unit tests green.
+
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+--- a/src/in_dxf.c
++++ b/src/in_dxf.c
+@@ search_field: generic field matcher
+               if (!pair || pair->code == 0)
+                 break;
++              // MTEXT R2018 "Embedded Object" reuses main-entity DXF codes
++              // (40=rect_width, 41=rect_height, 10/11 pts) that would clobber
++              // the already-read text_height/rect_width. r2000 drops it.
++              if (in_embedobj && obj->fixedtype == DWG_TYPE_MTEXT)
++                goto next_pair;
