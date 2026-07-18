@@ -102,6 +102,12 @@ class ToolController(QObject):
         return self.tool is not None
 
     def start_tool(self, name: str) -> None:
+        if getattr(self.window, "_active_layout", "Model") != "Model":
+            # Paper space is view/plot-only in v0.1 (honest, like the plan).
+            self.window.command_line.echo(
+                tr("Editing in paper space arrives in v0.2 — switch to the "
+                   "Model tab to draw."))
+            return
         if self.window.document is None:
             self.window.new_document()
         if self.tool is not None:

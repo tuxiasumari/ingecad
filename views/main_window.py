@@ -153,6 +153,14 @@ class MainWindow(QMainWindow):
         self.tools.paste()
         self.viewport.setFocus()
 
+    def _plot_dialog(self) -> None:
+        if self.document is None:
+            self.command_line.echo(tr("Nothing to plot."))
+            return
+        from views.print_dialog import PrintDialog
+
+        PrintDialog(self).exec()
+
     def eventFilter(self, obj, event) -> bool:
         # In-place TEXT typing captures the keyboard before the command line.
         if (event.type() == QEvent.KeyPress and self.tools.text_capturing()
@@ -221,6 +229,8 @@ class MainWindow(QMainWindow):
         item(file_menu, tr("New"), self.new_document, QKeySequence.New)
         item(file_menu, tr("Open..."), self._open_dialog, QKeySequence.Open)
         item(file_menu, tr("Save As..."), self._save_as_dialog, QKeySequence.SaveAs)
+        file_menu.addSeparator()
+        item(file_menu, tr("Plot..."), self._plot_dialog, QKeySequence.Print)
         file_menu.addSeparator()
         item(file_menu, tr("Quit"), self.close, QKeySequence.Quit)
 
@@ -472,6 +482,8 @@ class MainWindow(QMainWindow):
     # -- document plumbing for the tools ---------------------------------------
     def new_document(self) -> None:
         self.document = Document.new()
+        self._active_layout = "Model"
+        self._refresh_layout_tabs()
         self.viewport.set_scene(None)
         self.tools.attach_document(self.document)
         if self._layers_panel is not None:
@@ -716,7 +728,7 @@ class MainWindow(QMainWindow):
             return
         from render.backend import build_scene
 
-        scene = build_scene(self.document)
+        scene = build_scene(self.document, self._active_layout)
         self.viewport.set_scene(scene)
         self.tools.mark_scene_merged()
 
@@ -738,6 +750,8 @@ class MainWindow(QMainWindow):
         d.register("COPYCLIP", lambda *a: self._cmd_copy())
         d.register("CUTCLIP", lambda *a: self._cmd_cut())
         d.register("PASTECLIP", lambda *a: self._cmd_paste())
+        d.register("PLOT", lambda *a: self._plot_dialog())
+        d.register("PRINT", lambda *a: self._plot_dialog())
         # Phase 4 drawing + Phase 5 editing tools.
         for name in ("LINE", "CIRCLE", "ARC", "PLINE", "RECTANG", "POLYGON",
                      "ELLIPSE", "POINT", "TEXT", "MTEXT",
@@ -795,11 +809,70 @@ class MainWindow(QMainWindow):
             self.tools.after_history_change(command)
 
     def _build_status_bar(self) -> None:
-        # Coordinate readout, bottom-left — the classic AutoCAD tracker.
+        from PySide6.QtWidgets import QHBoxLayout, QToolButton
+
+        # Model / layout tabs, bottom-left on the coordinates row (BricsCAD).
+        self._active_layout = "Model"
+        self._layout_tab_host = QWidget(self)
+        self._layout_tab_bar = QHBoxLayout(self._layout_tab_host)
+        self._layout_tab_bar.setContentsMargins(0, 0, 6, 0)
+        self._layout_tab_bar.setSpacing(1)
+        self.statusBar().addWidget(self._layout_tab_host)
+
+        # Coordinate readout — the classic AutoCAD tracker.
         self._coords_label = QLabel("0.0000, 0.0000")
         self._coords_label.setMinimumWidth(220)
         self.statusBar().addWidget(self._coords_label)
         self.statusBar().addPermanentWidget(QLabel(f"IngeCAD {__version__}"))
+        self._refresh_layout_tabs()
+
+    _TAB_STYLE = """
+    QToolButton { border: 1px solid #3a3a42; border-bottom: none;
+        padding: 1px 10px; color: #9a9a9a; font-size: 11px;
+        background: #2a2a2e; }
+    QToolButton:hover { color: #d0d0d0; }
+    QToolButton:checked { color: #f0f0f0; background: #35424f;
+        font-weight: bold; }
+    """
+
+    def _layout_names(self) -> list:
+        names = ["Model"]
+        if self.document is not None:
+            names += [l.name for l in self.document.doc.layouts
+                      if l.name != "Model"]
+        return names
+
+    def _refresh_layout_tabs(self) -> None:
+        from PySide6.QtWidgets import QToolButton
+
+        while self._layout_tab_bar.count():
+            w = self._layout_tab_bar.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        for name in self._layout_names():
+            b = QToolButton(self._layout_tab_host)
+            b.setText(tr("Model") if name == "Model" else name)
+            b.setCheckable(True)
+            b.setChecked(name == self._active_layout)
+            b.setStyleSheet(self._TAB_STYLE)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.clicked.connect(lambda _=False, n=name: self.switch_layout(n))
+            self._layout_tab_bar.addWidget(b)
+
+    def switch_layout(self, name: str) -> None:
+        """Model/Layout tabs: re-render the chosen space (AutoCAD tabs)."""
+        if self.document is None or name == self._active_layout:
+            self._refresh_layout_tabs()   # re-sync checked states
+            return
+        self.tools.cancel()               # drop tool/selection across spaces
+        self._active_layout = name
+        self.regen_in_memory()
+        self.viewport.zoom_extents()
+        self._refresh_layout_tabs()
+        if name != "Model":
+            self.command_line.echo(
+                tr("Viewing layout \"{n}\" — editing in paper space arrives "
+                   "in v0.2.", n=name))
 
     def _on_cursor_moved(self, wx: float, wy: float) -> None:
         self._coords_label.setText(f"{wx:.4f}, {wy:.4f}")
@@ -876,6 +949,9 @@ class MainWindow(QMainWindow):
 
     def _on_open_done(self, document: Document, scene) -> None:
         self.document = document
+        # the open may have fallen back to a paper layout (empty modelspace)
+        self._active_layout = scene.layout_name or "Model"
+        self._refresh_layout_tabs()
         self.viewport.set_scene(scene)
         self.viewport.zoom_extents()
         self.tools.attach_document(document, flatten=scene.flatten)

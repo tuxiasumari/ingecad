@@ -304,14 +304,18 @@ def build_scene_for_entities(document: Document, entities, flatten: float) -> Sc
     return pack(backend.buckets)
 
 
-def build_scene(document: Document) -> Scene:
+def build_scene(document: Document, layout_name: str | None = None) -> Scene:
     """Run the ezdxf frontend over the drawing and pack the result ("regen").
 
-    Renders modelspace, or — when modelspace is empty — the fullest
-    paperspace layout (ArchiCAD-published sheets); Scene.layout_name
-    records the fallback so the UI can say so.
+    ``layout_name`` selects a tab explicitly: None/"Model" renders modelspace
+    (with the empty-modelspace fallback to the fullest paper layout), any
+    other name renders that paperspace layout — the Model/Layout tabs.
     """
-    layout, layout_name = pick_layout(document)
+    if layout_name and layout_name != "Model" \
+            and layout_name in document.doc.layouts:
+        layout = document.doc.layouts.get(layout_name)
+    else:
+        layout, layout_name = pick_layout(document)
     flatten = _flatten_distance(layout)
     backend = VertexBackend(flatten)
     context = TolerantRenderContext(document.doc)
