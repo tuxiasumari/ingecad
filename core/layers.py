@@ -18,11 +18,28 @@ from core.commands import Command
 from core.i18n import tr
 
 
+# Standard AutoCAD lineweights, hundredths of a millimetre. -3 = Default
+# (uses the drawing's default weight), -1 = ByLayer (not valid on a layer).
+LINEWEIGHTS = [-3, 0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70,
+               80, 90, 100, 106, 120, 140, 158, 200, 211]
+
+
+def lineweight_label(value: int) -> str:
+    if value == -3:
+        return "Default"
+    if value == -2:
+        return "ByBlock"
+    if value == -1:
+        return "ByLayer"
+    return f"{value / 100:.2f} mm"
+
+
 @dataclass
 class LayerInfo:
     name: str
     color: int          # ACI (AutoCAD Color Index)
     linetype: str
+    lineweight: int     # hundredths of mm, or -3 Default
     is_on: bool
     is_frozen: bool
     is_locked: bool
@@ -38,6 +55,7 @@ def layer_list(document) -> list[LayerInfo]:
             name=layer.dxf.name,
             color=abs(layer.dxf.color),      # negative color = layer off
             linetype=layer.dxf.linetype,
+            lineweight=layer.dxf.get("lineweight", -3),
             is_on=layer.is_on(),
             is_frozen=layer.is_frozen(),
             is_locked=layer.is_locked(),
@@ -45,6 +63,14 @@ def layer_list(document) -> list[LayerInfo]:
         ))
     infos.sort(key=lambda i: (i.name != "0", i.name.lower()))
     return infos
+
+
+def available_linetypes(document) -> list[str]:
+    """Linetype names loaded in the document (Continuous always first)."""
+    names = [lt.dxf.name for lt in document.doc.linetypes
+             if lt.dxf.name not in ("ByBlock", "ByLayer")]
+    names.sort(key=lambda n: (n != "Continuous", n.lower()))
+    return names
 
 
 def current_layer_name(document) -> str:
@@ -146,6 +172,10 @@ class LayerPropertyCommand(Command):
         if self.prop == "linetype":
             old = layer.dxf.linetype
             layer.dxf.linetype = value
+            return old
+        if self.prop == "lineweight":
+            old = layer.dxf.get("lineweight", -3)
+            layer.dxf.lineweight = value
             return old
         if self.prop == "on":
             old = layer.is_on()

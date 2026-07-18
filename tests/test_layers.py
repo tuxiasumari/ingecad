@@ -12,7 +12,8 @@ from core.document import Document
 
 
 def make_doc():
-    doc = Document(ezdxf.new("R2018"))
+    # setup=True loads the standard linetypes, like Document.new() does
+    doc = Document(ezdxf.new("R2018", setup=True))
     return doc, History(doc)
 
 
@@ -75,6 +76,34 @@ def test_new_entities_use_current_layer():
     L.set_current_layer(doc, "0")
     h.redo()
     assert doc.modelspace().query("LINE")[0].dxf.layer == "0"
+
+
+def test_layer_linetype_and_lineweight():
+    doc, h = make_doc()
+    doc.doc.layers.add("EJES", color=1)
+    h.execute(L.LayerPropertyCommand("EJES", "linetype", "DASHDOT"))
+    assert doc.doc.layers.get("EJES").dxf.linetype == "DASHDOT"
+    h.execute(L.LayerPropertyCommand("EJES", "lineweight", 50))
+    assert doc.doc.layers.get("EJES").dxf.lineweight == 50
+    info = next(i for i in L.layer_list(doc) if i.name == "EJES")
+    assert info.linetype == "DASHDOT" and info.lineweight == 50
+    h.undo()
+    assert doc.doc.layers.get("EJES").dxf.lineweight == -3   # back to Default
+    h.undo()
+    assert doc.doc.layers.get("EJES").dxf.linetype == "Continuous"
+
+
+def test_lineweight_labels():
+    assert L.lineweight_label(-3) == "Default"
+    assert L.lineweight_label(-1) == "ByLayer"
+    assert L.lineweight_label(25) == "0.25 mm"
+
+
+def test_available_linetypes():
+    doc, _ = make_doc()
+    lts = L.available_linetypes(doc)
+    assert lts[0] == "Continuous"
+    assert "DASHED" in lts and "ByLayer" not in lts
 
 
 def test_unique_layer_name():

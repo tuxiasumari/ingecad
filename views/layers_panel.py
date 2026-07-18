@@ -55,21 +55,16 @@ class LayersPanel(QWidget):
         super().__init__(window)
         self.window = window
 
-        self.table = QTableWidget(0, 6, self)
-        # Short single-glyph headers for the state columns so they stay narrow
-        # and the Name column gets the room (names were eliding to "...").
-        self.table.setHorizontalHeaderLabels(
-            ["", tr("Name"), "◍", "❄", "🔒", ""])
-        self.table.setHorizontalHeaderItem(
-            0, self._header_item("✓", tr("Current")))
-        self.table.setHorizontalHeaderItem(
-            2, self._header_item("◍", tr("On/Off")))
-        self.table.setHorizontalHeaderItem(
-            3, self._header_item("❄", tr("Freeze")))
-        self.table.setHorizontalHeaderItem(
-            4, self._header_item("🔒", tr("Lock")))
-        self.table.setHorizontalHeaderItem(
-            5, self._header_item("■", tr("Color")))
+        # Columns: Cur, Name, On, Freeze, Lock, Color, Linetype, Lineweight
+        self.table = QTableWidget(0, 8, self)
+        self.table.setHorizontalHeaderItem(0, self._header_item("✓", tr("Current")))
+        self.table.setHorizontalHeaderItem(1, self._header_item(tr("Name"), tr("Name")))
+        self.table.setHorizontalHeaderItem(2, self._header_item("◍", tr("On/Off")))
+        self.table.setHorizontalHeaderItem(3, self._header_item("❄", tr("Freeze")))
+        self.table.setHorizontalHeaderItem(4, self._header_item("🔒", tr("Lock")))
+        self.table.setHorizontalHeaderItem(5, self._header_item("■", tr("Color")))
+        self.table.setHorizontalHeaderItem(6, self._header_item(tr("Linetype"), tr("Linetype")))
+        self.table.setHorizontalHeaderItem(7, self._header_item(tr("Lineweight"), tr("Lineweight")))
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked)
@@ -78,15 +73,12 @@ class LayersPanel(QWidget):
         self.table.verticalHeader().setDefaultSectionSize(22)  # compact rows
 
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Fixed)
         header.setSectionResizeMode(1, QHeaderView.Stretch)    # Name takes room
-        for col in (2, 3, 4, 5):
+        for col in (0, 2, 3, 4, 5, 6, 7):
             header.setSectionResizeMode(col, QHeaderView.Fixed)
-        self.table.setColumnWidth(0, 26)
-        self.table.setColumnWidth(2, 32)
-        self.table.setColumnWidth(3, 32)
-        self.table.setColumnWidth(4, 32)
-        self.table.setColumnWidth(5, 44)
+        for col, w in ((0, 26), (2, 32), (3, 32), (4, 32), (5, 44),
+                       (6, 96), (7, 76)):
+            self.table.setColumnWidth(col, w)
 
         self.table.cellDoubleClicked.connect(self._on_double_click)
         self.table.cellChanged.connect(self._on_cell_changed)
@@ -160,6 +152,14 @@ class LayersPanel(QWidget):
         swatch.setToolTip(tr("ACI color {n}", n=info.color))
         swatch.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         self.table.setItem(row, 5, swatch)
+
+        lt = QTableWidgetItem(info.linetype)
+        lt.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        self.table.setItem(row, 6, lt)
+
+        lw = QTableWidgetItem(layer_ops.lineweight_label(info.lineweight))
+        lw.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        self.table.setItem(row, 7, lw)
 
     @staticmethod
     def _state_glyph(col: int, active: bool) -> str:
@@ -240,6 +240,30 @@ class LayersPanel(QWidget):
             if chosen.isValid():
                 self._execute(layer_ops.LayerPropertyCommand(
                     name, "color", nearest_aci(chosen)))
+        elif col == 6:
+            self._pick_linetype(name)
+        elif col == 7:
+            self._pick_lineweight(name)
+
+    def _pick_linetype(self, name: str) -> None:
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        for lt in layer_ops.available_linetypes(self.document):
+            menu.addAction(lt, lambda lt=lt: self._execute(
+                layer_ops.LayerPropertyCommand(name, "linetype", lt)))
+        menu.exec(QCursor.pos())
+
+    def _pick_lineweight(self, name: str) -> None:
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        for lw in layer_ops.LINEWEIGHTS:
+            menu.addAction(layer_ops.lineweight_label(lw), lambda lw=lw: self._execute(
+                layer_ops.LayerPropertyCommand(name, "lineweight", lw)))
+        menu.exec(QCursor.pos())
 
     def _on_cell_changed(self, row: int, col: int) -> None:
         if self._loading or col != 1 or self.document is None:
