@@ -86,6 +86,11 @@ def main() -> int:
     app.setOrganizationName("IngeCAD")
     # Wayland matches the running window to its .desktop entry by this name.
     app.setDesktopFileName("ingecad")
+    from PySide6.QtGui import QIcon
+
+    icon_path = Path(__file__).parent / "resources" / "ingecad.svg"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     _apply_dark_theme(app)
     _init_language()
 

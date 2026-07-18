@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- IngeCAD app icon — GNOME/Yaru style: dark rounded tile, drafting grid,
+     UCS axes (X red, Y green) and a lowercase "i" whose dot is the yellow
+     AutoSnap square. SPDX-License-Identifier: GPL-3.0-or-later -->
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a3039"/>
+      <stop offset="1" stop-color="#171b21"/>
+    </linearGradient>
+    <clipPath id="tile">
+      <rect x="8" y="8" width="112" height="112" rx="24"/>
+    </clipPath>
+  </defs>
+
+  <!-- tile -->
+  <rect x="8" y="8" width="112" height="112" rx="24" fill="url(#bg)"/>
+
+  <g clip-path="url(#tile)">
+    <!-- drafting grid (minor lines, faint like the model-space GRID) -->
+    <g stroke="#2e3540" stroke-width="1">
+      <path d="M24 8V120 M40 8V120 M56 8V120 M72 8V120 M88 8V120 M104 8V120"/>
+      <path d="M8 24H120 M8 40H120 M8 56H120 M8 72H120 M8 88H120 M8 104H120"/>
+    </g>
+    <!-- brighter major lines every 5th -->
+    <g stroke="#3a4250" stroke-width="1">
+      <path d="M8 88H120 M40 8V120"/>
+    </g>
+  </g>
+
+  <!-- UCS axes: X red, Y green (AutoCAD colors), arrowheads -->
+  <g stroke-linecap="round">
+    <line x1="34" y1="94" x2="98" y2="94" stroke="#d94f3d" stroke-width="7"/>
+    <line x1="34" y1="94" x2="34" y2="32" stroke="#3fb950" stroke-width="7"/>
+  </g>
+  <path d="M96 85 L114 94 L96 103 Z" fill="#d94f3d"/>
+  <path d="M25 34 L34 16 L43 34 Z" fill="#3fb950"/>
+  <!-- origin joint -->
+  <rect x="29" y="89" width="10" height="10" rx="2" fill="#e8eaed"/>
+
+  <!-- the "i": bright stem, AutoSnap-yellow square dot -->
+  <rect x="66" y="49" width="12" height="37" rx="6" fill="#eceff4"/>
+  <rect x="65" y="29" width="14" height="14" rx="2.5" fill="#ffd23f"/>
+
+  <!-- subtle tile edge -->
+  <rect x="8.5" y="8.5" width="111" height="111" rx="23.5" fill="none"
+        stroke="#000000" stroke-opacity="0.45"/>
+  <rect x="9.5" y="9.5" width="109" height="109" rx="22.5" fill="none"
+        stroke="#ffffff" stroke-opacity="0.05"/>
+</svg>
