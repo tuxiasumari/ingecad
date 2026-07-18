@@ -321,6 +321,146 @@ class ReplaceEntitiesCommand(Command):
         document.dirty = True
 
 
+# -- blocks (Phase 6) ----------------------------------------------------------
+
+class CreateBlockCommand(Command):
+    """BLOCK: define a block from entities and convert them to a reference.
+
+    Matches AutoCAD's default "Convert to block": the selection is packed into
+    a new block definition and replaced in place by one INSERT at the base
+    point. The block's base point is the picked point, so — inserted at that
+    same point — the reference lands exactly over the originals.
+    """
+
+    name = "BLOCK"
+
+    def __init__(self, block_name: str, base_point, entities) -> None:
+        self.block_name = block_name
+        self.base = base_point
+        self.sources = list(entities)
+        self.insert = None
+        self._defined = False
+
+    def do(self, document) -> None:
+        doc = document.doc
+        msp = document.modelspace()
+        if self.block_name not in doc.blocks:
+            blk = doc.blocks.new(
+                name=self.block_name,
+                base_point=(self.base[0], self.base[1]))
+            for e in self.sources:
+                blk.add_entity(e.copy())
+            self._defined = True
+        for e in self.sources:
+            msp.unlink_entity(e)
+        self.insert = msp.add_blockref(
+            self.block_name, (self.base[0], self.base[1]))
+        document.dirty = True
+
+    def undo(self, document) -> None:
+        doc = document.doc
+        msp = document.modelspace()
+        if self.insert is not None:
+            msp.delete_entity(self.insert)
+            self.insert = None
+        for e in self.sources:
+            msp.add_entity(e)
+        if self._defined and self.block_name in doc.blocks:
+            doc.blocks.delete_block(self.block_name, safe=False)
+            self._defined = False
+        document.dirty = True
+
+
+def create_block(block_name, base_point, entities) -> CreateBlockCommand:
+    return CreateBlockCommand(block_name, base_point, entities)
+
+
+def insert_block(name, point, xscale=1.0, yscale=None,
+                 rotation=0.0) -> AddEntityCommand:
+    ys = xscale if yscale is None else yscale
+    return AddEntityCommand(
+        "INSERT",
+        lambda msp: msp.add_blockref(
+            name, (point[0], point[1]),
+            dxfattribs={"xscale": xscale, "yscale": ys, "rotation": rotation}))
+
+
+class ExplodeCommand(Command):
+    """EXPLODE: replace INSERT/POLYLINE with their component entities.
+
+    Component entities come from ``virtual_entities`` (already placed in world
+    coordinates); the originals are unlinked (kept alive for exact undo).
+    """
+
+    name = "EXPLODE"
+
+    def __init__(self, entities) -> None:
+        self.sources = list(entities)
+        self.pieces: list = []
+
+    def do(self, document) -> None:
+        msp = document.modelspace()
+        self.pieces = []
+        for e in self.sources:
+            if e.dxftype() not in ("INSERT", "LWPOLYLINE", "POLYLINE"):
+                continue
+            parts = []
+            for v in e.virtual_entities():
+                msp.add_entity(v)
+                parts.append(v)
+            msp.unlink_entity(e)
+            self.pieces.append((e, parts))
+        document.dirty = True
+
+    def undo(self, document) -> None:
+        msp = document.modelspace()
+        for original, parts in self.pieces:
+            for v in parts:
+                msp.delete_entity(v)
+            msp.add_entity(original)
+        self.pieces = []
+        document.dirty = True
+
+
+def explode_entities(entities) -> ExplodeCommand:
+    return ExplodeCommand(entities)
+
+
+# -- hatch (Phase 6) -----------------------------------------------------------
+
+def _add_boundary(hatch, entity) -> None:
+    """Add ``entity`` (closed) as a boundary path of ``hatch``."""
+    t = entity.dxftype()
+    if t == "LWPOLYLINE":
+        pts = list(entity.get_points("xyb"))   # (x, y, bulge)
+        hatch.paths.add_polyline_path(
+            [(p[0], p[1], p[2]) for p in pts], is_closed=True)
+    elif t == "CIRCLE":
+        c = entity.dxf.center
+        path = hatch.paths.add_edge_path()
+        path.add_arc((c.x, c.y), entity.dxf.radius, 0, 360)
+    elif t == "ELLIPSE":
+        c = entity.dxf.center
+        maj = entity.dxf.major_axis
+        path = hatch.paths.add_edge_path()
+        path.add_ellipse((c.x, c.y), (maj.x, maj.y), entity.dxf.ratio, 0, 360)
+
+
+def add_hatch(boundaries, pattern="SOLID", scale=1.0, angle=0.0,
+              color=7) -> AddEntityCommand:
+    """SOLID or a named pattern (ANSI31…), bounded by closed entities."""
+    def factory(msp):
+        h = msp.add_hatch(color=color)
+        if str(pattern).upper() == "SOLID":
+            h.set_solid_fill(color=color)
+        else:
+            h.set_pattern_fill(pattern, color=color, angle=angle, scale=scale)
+        for b in boundaries:
+            _add_boundary(h, b)
+        return h
+    return AddEntityCommand("HATCH", factory)
+
+
 def move_entities(entities, dx: float, dy: float) -> TransformCommand:
     from ezdxf.math import Matrix44
 

@@ -226,6 +226,7 @@ class MainWindow(QMainWindow):
         # -- Insert -----------------------------------------------------------
         insert_menu = menu_bar.addMenu(tr("Insert"))
         cmd_item(insert_menu, tr("Block..."), "INSERT")
+        cmd_item(insert_menu, tr("Create Block..."), "BLOCK", icon=False)
 
         # -- Format -----------------------------------------------------------
         format_menu = menu_bar.addMenu(tr("Format"))
@@ -259,6 +260,8 @@ class MainWindow(QMainWindow):
         for label, name in ((tr("Trim"), "TRIM"), (tr("Extend"), "EXTEND"),
                             (tr("Fillet"), "FILLET"), (tr("Erase"), "ERASE")):
             cmd_item(modify_menu, label, name)
+        modify_menu.addSeparator()
+        cmd_item(modify_menu, tr("Explode"), "EXPLODE", icon=False)
 
         # -- Tools ------------------------------------------------------------
         tools_menu = menu_bar.addMenu(tr("Tools"))
@@ -635,12 +638,12 @@ class MainWindow(QMainWindow):
         for name in ("LINE", "CIRCLE", "ARC", "PLINE", "RECTANG", "POLYGON",
                      "ELLIPSE", "POINT", "TEXT", "MTEXT",
                      "ERASE", "MOVE", "COPY", "ROTATE", "SCALE", "MIRROR",
-                     "OFFSET", "TRIM", "EXTEND", "FILLET"):
+                     "OFFSET", "TRIM", "EXTEND", "FILLET",
+                     "BLOCK", "INSERT", "EXPLODE", "HATCH"):
             d.register(name, lambda *a, n=name: self.tools.start_tool(n))
         # In-scope commands that land in later phases: answer honestly.
         for name, phase in (
-            ("DIST", 4), ("EXPLODE", 6),
-            ("BLOCK", 6), ("INSERT", 6), ("HATCH", 6), ("LINETYPE", 6),
+            ("DIST", 4), ("LINETYPE", 6),
             ("AREA", 7), ("LIST", 7),
         ):
             d.register_future(name, phase)

@@ -21,13 +21,14 @@ from core.select import GeometryIndex, apply_grip_edit, entity_grips
 from core.snap import SnapEngine, SnapHit
 from render.backend import _flatten_distance, build_scene_for_entities
 from tools.base import Tool, ToolContext
+from tools.blocks import BLOCK_TOOL_CLASSES
 from tools.draw import TOOL_CLASSES
 from tools.edit import EDIT_TOOL_CLASSES
 
 SNAP_PX = 12.0   # aperture in logical pixels
 PICK_PX = 8.0    # pick box half-size in logical pixels
 
-ALL_TOOL_CLASSES = {**TOOL_CLASSES, **EDIT_TOOL_CLASSES}
+ALL_TOOL_CLASSES = {**TOOL_CLASSES, **EDIT_TOOL_CLASSES, **BLOCK_TOOL_CLASSES}
 
 
 class ToolController(QObject):
@@ -108,6 +109,7 @@ class ToolController(QObject):
             finish=self._finish,
             services=self,
             ask_text=self._ask_text,
+            ask_choice=self._ask_choice,
         )
         self.tool = ALL_TOOL_CLASSES[name](ctx)
         self.tool.start()
@@ -224,6 +226,22 @@ class ToolController(QObject):
             self.window, prompt, prompt, default)
         return text if ok else None
 
+    def _ask_choice(self, prompt: str, items: list, default: str = "") -> Optional[str]:
+        from PySide6.QtWidgets import QInputDialog
+
+        start = items.index(default) if default in items else 0
+        text, ok = QInputDialog.getItem(
+            self.window, prompt, prompt, list(items), start, editable=False)
+        return text if ok else None
+
+    def block_names(self) -> list:
+        """User block definitions (not *Model_Space/*Paper_Space/anonymous)."""
+        if self.window.document is None:
+            return []
+        return sorted(
+            b.name for b in self.window.document.doc.blocks
+            if not b.name.startswith("*"))
+
     def _finish(self) -> None:
         self.tool = None
         self.snap_hit = None
@@ -277,13 +295,22 @@ class ToolController(QObject):
                 old_handles = [e.dxf.handle for e in command.entities]
             elif isinstance(command, actions.ReplaceEntitiesCommand):
                 old_handles = [e.dxf.handle for e in command.old_entities]
+            elif isinstance(command, (actions.CreateBlockCommand,
+                                      actions.ExplodeCommand)):
+                old_handles = [e.dxf.handle for e in command.sources]
             if old_handles:
                 self.window.viewport.hide_handles(old_handles)
-            for attr in ("new_entities", "copies", "entities"):
-                extra = getattr(command, attr, None)
-                if extra:
-                    self._pending_render.extend(extra)
-                    break
+            if isinstance(command, actions.CreateBlockCommand) and command.insert:
+                self._pending_render.append(command.insert)
+            elif isinstance(command, actions.ExplodeCommand):
+                for _orig, parts in command.pieces:
+                    self._pending_render.extend(parts)
+            else:
+                for attr in ("new_entities", "copies", "entities"):
+                    extra = getattr(command, attr, None)
+                    if extra:
+                        self._pending_render.extend(extra)
+                        break
             self._refresh_overlay()
             self._regen_timer.start()
 
