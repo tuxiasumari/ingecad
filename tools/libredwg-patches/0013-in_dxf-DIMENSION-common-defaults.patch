@@ -1,0 +1,53 @@
+Subject: in_dxf: apply DIMENSION common defaults the DXF omits
+
+DIMENSION carries several fields only in the DWG, not the DXF (insertion
+scale, line-spacing style/factor, actual measurement). A writer like
+ezdxf omits them, so LibreDWG's importer left the calloc zeros, and the
+r2000 encoder then wrote a degenerate dimension: ins_scale (0,0,0) — a
+zero insertion scale — plus line-spacing style/factor 0 and
+act_measurement 0. AutoCAD/BricsCAD (and ODA) mis-scale or reject those;
+this is the "dims distorted" symptom on re-saved drawings.
+
+Set the same defaults ODA writes, in the per-entity "set defaults not in
+dxf" block that already seeds scale/extrusion/etc., so any 71/72/41 pairs
+the DXF *does* carry still overwrite them afterwards: ins_scale (1,1,1),
+lspace_style 1, lspace_factor 1.0, act_measurement -1 (AutoCAD's
+"recompute on open"). Verified against ODA's ACAD2000 output: the
+DIMENSION common now decodes identically to ODA except flag1, which is a
+redundant-bit canonicalization that decodes to the same dimtype.
+
+Found by IngeCAD's DWG round-trip hunt with ODA as a strict oracle
+(same corpus as #1311-#1315). Phase A of a 100%-clean r2000 writer.
+
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+--- a/src/in_dxf.c
++++ b/src/in_dxf.c
+@@ -9896,6 +9896,29 @@ new_object (char *restrict name, char *restrict dxfname,
+         dwg_dynapi_entity_set_value (_obj, obj->name, "extrusion", &pt, 0);
+         LOG_TRACE ("%s.extrusion = (0,0,1) (default)\n", obj->name);
+         pt.z = 0.0;
+       }
++    // DIMENSION common fields that live only in the DWG, not the DXF: a
++    // writer like ezdxf omits them, and the calloc zeros are degenerate —
++    // a (0,0,0) insertion scale, line-spacing style/factor 0, and
++    // act_measurement 0 (AutoCAD writes -1 = "recompute"). AutoCAD/ODA
++    // reject or mis-scale those, so apply the same defaults ODA does. The
++    // 71/72/41/... pairs that the DXF *does* carry overwrite these later.
++    if (dwg_dynapi_entity_field (obj->name, "ins_scale"))
++      {
++        BITCODE_BS lspace_style = 1;
++        BITCODE_BD one = 1.0, neg1 = -1.0;
++        pt.x = pt.y = pt.z = 1.0;
++        dwg_dynapi_entity_set_value (_obj, obj->name, "ins_scale", &pt, 0);
++        dwg_dynapi_entity_set_value (_obj, obj->name, "lspace_style",
++                                     &lspace_style, 0);
++        dwg_dynapi_entity_set_value (_obj, obj->name, "lspace_factor",
++                                     &one, 0);
++        dwg_dynapi_entity_set_value (_obj, obj->name, "act_measurement",
++                                     &neg1, 0);
++        LOG_TRACE ("%s dimension defaults: ins_scale (1,1,1), lspace 1/1.0,"
++                   " act_measurement -1\n", obj->name);
++        pt.x = pt.y = pt.z = 0.0;
++      }
+   }

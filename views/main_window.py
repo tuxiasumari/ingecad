@@ -958,7 +958,7 @@ class MainWindow(QMainWindow):
             self,
             tr("Save Drawing As"),
             self.document.name,
-            tr("DWG r2000 (*.dwg);;DXF (*.dxf)"),
+            tr("DWG (*.dwg);;DXF (*.dxf)"),
         )
         if not filename:
             return
@@ -966,7 +966,7 @@ class MainWindow(QMainWindow):
         if path.suffix.lower() not in (".dwg", ".dxf"):
             path = path.with_suffix(".dwg" if "dwg" in selected.lower() else ".dxf")
         try:
-            self.document.save_as(path)
+            engine = self.document.save_as(path)
         except Exception as exc:
             QMessageBox.warning(
                 self,
@@ -975,7 +975,18 @@ class MainWindow(QMainWindow):
             )
             return
         self.setWindowTitle(f"IngeCAD — {self.document.name}")
-        self.statusBar().showMessage(tr("Saved {name}", name=path.name), 5000)
+        if engine == "oda":
+            self.statusBar().showMessage(
+                tr("Saved {name} (DWG r2018 via ODA)", name=path.name), 5000)
+        elif engine == "libredwg":
+            # Honest until the Track L4 encoder hunt lands: LibreDWG's r2000
+            # writer still mis-frames HATCH/DIMENSION for strict parsers.
+            self.statusBar().showMessage(
+                tr("Saved {name} (LibreDWG r2000 — experimental; use DXF or "
+                   "install the ODA converter for guaranteed DWG)",
+                   name=path.name), 10000)
+        else:
+            self.statusBar().showMessage(tr("Saved {name}", name=path.name), 5000)
 
     def open_path(self, path: Path) -> None:
         """OS file associations, argv[1], and File > Open land here."""

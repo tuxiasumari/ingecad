@@ -181,6 +181,47 @@ def load_dwg(dwg_path: Path):
     )
 
 
+def oda_dxf_to_dwg(dxf_path: Path, dwg_path: Path,
+                   version: str = "ACAD2018") -> None:
+    """Convert DXF -> DWG through the ODA File Converter satellite."""
+    import shutil as _shutil
+    import tempfile
+
+    oda = find_oda()
+    if oda is None:
+        raise DwgBridgeError("ODA File Converter is not installed")
+    dwg_path = Path(dwg_path)
+    with tempfile.TemporaryDirectory(prefix="ingecad-oda-") as tmp:
+        indir = Path(tmp) / "in"
+        outdir = Path(tmp) / "out"
+        indir.mkdir()
+        outdir.mkdir()
+        # ASCII-safe temp name: the converter is a Qt app and some paths with
+        # accents have bitten satellite processes before (skp2dae lesson).
+        _shutil.copy(dxf_path, indir / "plano.dxf")
+        _run([str(oda), str(indir), str(outdir), version, "DWG", "0", "1",
+              "*.dxf"], outdir / "plano.dwg")
+        err = outdir / "plano.dxf.err"
+        if err.exists():
+            raise DwgBridgeError(err.read_text(errors="replace")[:500])
+        _shutil.move(outdir / "plano.dwg", dwg_path)
+
+
+def write_dwg(dxf_path: Path, dwg_path: Path) -> str:
+    """Write a DWG from a DXF, preferring the reliable engine.
+
+    ODA (when installed) writes r2018 that AutoCAD/BricsCAD open cleanly;
+    LibreDWG's r2000 encoder still has HATCH/DIMENSION framing bugs that
+    strict parsers reject (Track L4 hunt in progress), so it is the
+    fallback. Returns the engine used: "oda" or "libredwg".
+    """
+    if find_oda() is not None:
+        oda_dxf_to_dwg(dxf_path, dwg_path)
+        return "oda"
+    dxf_to_dwg(dxf_path, dwg_path)
+    return "libredwg"
+
+
 def dxf_to_dwg(dxf_path: Path, dwg_path: Path, version: str = "r2000") -> None:
     """Convert a DXF to DWG (LibreDWG writes r2000 reliably)."""
     tool = find_dxf2dwg()

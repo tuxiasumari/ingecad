@@ -109,17 +109,23 @@ class Document:
     def modelspace(self):
         return self.doc.modelspace()
 
-    def save_as(self, path: Path) -> None:
-        """Save as DXF directly, or as DWG r2000 through the LibreDWG bridge."""
+    def save_as(self, path: Path) -> str:
+        """Save as DXF directly, or as DWG through the best available engine.
+
+        Returns the engine used: "dxf", "oda" (r2018) or "libredwg" (r2000,
+        still experimental for HATCH/DIMENSION — Track L4).
+        """
         path = Path(path)
         if path.suffix.lower() == ".dwg":
-            from formats.dwg_bridge import dxf_to_dwg
+            from formats.dwg_bridge import write_dwg
 
             with tempfile.TemporaryDirectory(prefix="ingecad-save-") as tmp:
                 tmp_dxf = Path(tmp) / "out.dxf"
                 self.doc.saveas(tmp_dxf)
-                dxf_to_dwg(tmp_dxf, path)
+                engine = write_dwg(tmp_dxf, path)
         else:
             self.doc.saveas(path)
+            engine = "dxf"
         self.path = path
         self.dirty = False
+        return engine
