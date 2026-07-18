@@ -99,6 +99,7 @@ class MainWindow(QMainWindow):
         self._build_status_bar()
         self._build_command_line()
         self._build_sidebar()
+        self._build_toolbars()
         self.viewport.cursorMoved.connect(self._on_cursor_moved)
 
         # Frameless windows have no system resize borders; an app-wide filter
@@ -289,6 +290,51 @@ class MainWindow(QMainWindow):
         if self._layers_panel is not None:
             self._layers_panel.refresh()
         self.setWindowTitle(f"IngeCAD — {tr('Untitled')}")
+
+    # -- classic toolbars (Draw left, Modify top) ------------------------------
+    def _build_toolbars(self) -> None:
+        from PySide6.QtWidgets import QToolBar
+
+        from views.icons import command_icon
+
+        draw = [("LINE", tr("Line")), ("PLINE", tr("Polyline")),
+                ("CIRCLE", tr("Circle")), ("ARC", tr("Arc")),
+                ("RECTANG", tr("Rectangle")), ("POLYGON", tr("Polygon"))]
+        modify = [("ERASE", tr("Erase")), ("MOVE", tr("Move")),
+                  ("COPY", tr("Copy")), ("ROTATE", tr("Rotate")),
+                  ("SCALE", tr("Scale")), ("MIRROR", tr("Mirror")),
+                  ("OFFSET", tr("Offset")), ("TRIM", tr("Trim")),
+                  ("EXTEND", tr("Extend")), ("FILLET", tr("Fillet"))]
+
+        self._draw_toolbar = QToolBar(tr("Draw"), self)
+        self._draw_toolbar.setObjectName("draw_toolbar")
+        self._draw_toolbar.setOrientation(Qt.Vertical)
+        self._draw_toolbar.setMovable(True)
+        for name, label in draw:
+            act = QAction(command_icon(name), label, self)
+            act.setToolTip(f"{label} ({name})")
+            act.triggered.connect(lambda _=False, n=name: self._invoke_command(n))
+            self._draw_toolbar.addAction(act)
+        self.addToolBar(Qt.LeftToolBarArea, self._draw_toolbar)
+
+        self._modify_toolbar = QToolBar(tr("Modify"), self)
+        self._modify_toolbar.setObjectName("modify_toolbar")
+        self._modify_toolbar.setMovable(True)
+        for name, label in modify:
+            act = QAction(command_icon(name), label, self)
+            act.setToolTip(f"{label} ({name})")
+            act.triggered.connect(lambda _=False, n=name: self._invoke_command(n))
+            self._modify_toolbar.addAction(act)
+        self.addToolBar(Qt.TopToolBarArea, self._modify_toolbar)
+
+    def _invoke_command(self, name: str) -> None:
+        """A toolbar button runs a command like typing it: any running tool
+        is cancelled first (AutoCAD interrupts the current command)."""
+        if self.tools.active():
+            self.tools.cancel()
+        self.command_line.echo(f"{tr('Command')}: {name}")
+        self.dispatcher.submit(name)
+        self.viewport.setFocus()
 
     def _build_sidebar(self) -> None:
         """Persistent right sidebar: Layers | Properties tabs (bottom tabs)."""

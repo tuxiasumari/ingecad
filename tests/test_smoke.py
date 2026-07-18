@@ -115,6 +115,27 @@ def test_typed_alias_wins_over_inline_completion(qapp):
     win.close()
 
 
+def test_toolbar_buttons_start_commands(qapp):
+    # Draw and Modify toolbars fire the same commands as typing them.
+    from views.main_window import MainWindow
+
+    win = MainWindow()
+    win.show()
+    qapp.processEvents()
+    draw_names = [a.toolTip() for a in win._draw_toolbar.actions()]
+    assert any("LINE" in t for t in draw_names)
+    modify_names = [a.toolTip() for a in win._modify_toolbar.actions()]
+    assert any("TRIM" in t for t in modify_names)
+
+    win._invoke_command("LINE")
+    assert win.tools.active() and win.tools.tool.name == "LINE"
+    # a second toolbar command cancels the first and starts the new one
+    win._invoke_command("CIRCLE")
+    assert win.tools.active() and win.tools.tool.name == "CIRCLE"
+    win.tools.cancel()
+    win.close()
+
+
 def test_trim_full_flow_through_controller(qapp):
     # Regression: wants_selection was silently reset by the dataclass
     # __init__, so TRIM never entered its selection phase and Enter killed
