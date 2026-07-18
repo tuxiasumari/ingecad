@@ -1,0 +1,29 @@
+Subject: in_dxf: 2D point-vector loses every point's Y (HATCH.seeds etc.)
+
+The generic point-vector importer set the first point's .x with `j == 0 &&
+code < 20`, but the first point's .y (code 20, j still 0) fell through
+`j > 0 && j < size` and was never stored; 2D vectors also never advanced
+j. So a HATCH seed point came in as (x, 0) — a seed far outside the hatch
+that AcDb rejects ("Object improperly read: <AcDbHatch>, Out of memory"),
+making whole cadastre files unreadable in AutoCAD/BricsCAD/ODA. Store the
+y for j>=0 and advance j after a completed 2D point.
+
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+--- a/src/in_dxf.c
++++ b/src/in_dxf.c
+@@ -12165,7 +12165,7 @@ new_object (char *restrict name, char *restrict dxfname,
+-                          else if (j > 0 && j < size)
++                          else if (j >= 0 && j < size)  // j==0: first pt's .y
+                             {
+                               int _i = is2d ? j * 2 : j * 3;
+                               dwg_dynapi_entity_value (_obj, obj->name,
+                                                        f->name, &pts, NULL);
+                               if (pair->code < 20 && pts != NULL)
+                                 pts[_i] = pair->value.d;
+                               else if (pair->code < 30 && pts != NULL)
+                                 {
+-                                  if (is2d) LOG_TRACE (...);
+                                   pts[_i + 1] = pair->value.d;
++                                  if (is2d) { LOG_TRACE (...); j++; }
+                                 }
