@@ -44,8 +44,20 @@ class _TwoPointDim(Tool):
     def _make(self, location: Point):
         raise NotImplementedError
 
-    def _dim_preview(self, cursor: Point):
+    def _frame(self, cursor: Point):
+        """(d1, d2): the dimension-line endpoints for the current cursor."""
         raise NotImplementedError
+
+    def _measurement(self, cursor: Point) -> float:
+        raise NotImplementedError
+
+    def preview_dimension(self, cursor: Point):
+        """A real-looking dimension preview (frame + measurement) or None."""
+        if self._p1 is None or self._p2 is None:
+            return None
+        d1, d2 = self._frame(cursor)
+        return {"p1": self._p1, "p2": self._p2, "d1": d1, "d2": d2,
+                "text": f"{self._measurement(cursor):.2f}"}
 
     def on_enter(self) -> None:
         # Enter on the first prompt switches to AutoCAD's select-object mode.
@@ -80,11 +92,11 @@ class _TwoPointDim(Tool):
             self.ctx.finish()
 
     def preview_segments(self, cursor: Point):
-        if self._p1 is None:
-            return []
-        if self._p2 is None:
+        # Only the phase-1 rubber band; the location phase draws a rich
+        # dimension preview via preview_dimension instead.
+        if self._p1 is not None and self._p2 is None:
             return [(self._p1, cursor)]
-        return self._dim_preview(cursor)
+        return []
 
 
 class DimLinearTool(_TwoPointDim):
@@ -100,15 +112,18 @@ class DimLinearTool(_TwoPointDim):
     def _make(self, location: Point):
         return actions.dim_linear(self._p1, self._p2, location)
 
-    def _dim_preview(self, cursor: Point):
+    def _frame(self, cursor: Point):
         p1, p2 = self._p1, self._p2
         if self._orientation(cursor):
             y = cursor[1]
-            d1, d2 = (p1[0], y), (p2[0], y)
-        else:
-            x = cursor[0]
-            d1, d2 = (x, p1[1]), (x, p2[1])
-        return [(p1, d1), (p2, d2), (d1, d2)]
+            return (p1[0], y), (p2[0], y)
+        x = cursor[0]
+        return (x, p1[1]), (x, p2[1])
+
+    def _measurement(self, cursor: Point) -> float:
+        if self._orientation(cursor):
+            return abs(self._p2[0] - self._p1[0])
+        return abs(self._p2[1] - self._p1[1])
 
 
 class DimAlignedTool(_TwoPointDim):
@@ -119,15 +134,17 @@ class DimAlignedTool(_TwoPointDim):
     def _make(self, location: Point):
         return actions.dim_aligned(self._p1, self._p2, location)
 
-    def _dim_preview(self, cursor: Point):
+    def _frame(self, cursor: Point):
         p1, p2 = self._p1, self._p2
         dx, dy = p2[0] - p1[0], p2[1] - p1[1]
         length = math.hypot(dx, dy) or 1.0
         nx, ny = -dy / length, dx / length
         dist = (cursor[0] - p1[0]) * nx + (cursor[1] - p1[1]) * ny
-        d1 = (p1[0] + nx * dist, p1[1] + ny * dist)
-        d2 = (p2[0] + nx * dist, p2[1] + ny * dist)
-        return [(p1, d1), (p2, d2), (d1, d2)]
+        return ((p1[0] + nx * dist, p1[1] + ny * dist),
+                (p2[0] + nx * dist, p2[1] + ny * dist))
+
+    def _measurement(self, cursor: Point) -> float:
+        return math.dist(self._p1, self._p2)
 
 
 class _CurvedDim(Tool):

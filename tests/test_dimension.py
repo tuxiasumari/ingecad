@@ -145,18 +145,30 @@ def test_linear_dim_select_object():
     assert dims[0].get_measurement() == pytest.approx(10.0)
 
 
-def test_linear_preview_frame():
-    # While placing, the preview returns the extension + dimension lines.
+def test_linear_preview_dimension():
+    # While placing, a rich dimension preview (frame + measurement) is offered.
     h = Harness()
     tool = DimLinearTool(h.ctx)
     tool.start()
     tool.on_point((0, 0))
+    assert tool.preview_dimension((0, 2)) is None    # only one point yet
     tool.on_point((10, 0))
-    segs = tool.preview_segments((5, 4))   # cursor above -> horizontal
-    assert len(segs) == 3                  # two extension lines + dim line
-    # the dimension line runs along y = 4 between the two origins
-    assert ((0, 0), (0, 4)) in segs
-    assert ((0, 4), (10, 4)) in segs
+    dim = tool.preview_dimension((5, 4))             # cursor above -> horizontal
+    assert dim["d1"] == (0, 4) and dim["d2"] == (10, 4)
+    assert dim["text"] == "10.00"
+    # cursor to the side -> vertical measurement
+    side = tool.preview_dimension((14, 0))
+    assert side["text"] == "0.00"      # p1,p2 share Y, vertical extent is 0
+
+
+def test_aligned_preview_measures_true_length():
+    h = Harness()
+    tool = DimAlignedTool(h.ctx)
+    tool.start()
+    tool.on_point((0, 0))
+    tool.on_point((3, 4))
+    dim = tool.preview_dimension((0, 4))
+    assert dim["text"] == "5.00"
 
 
 def test_dimension_uses_current_style():

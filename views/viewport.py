@@ -20,7 +20,14 @@ from typing import Optional
 
 import numpy as np
 from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QMatrix4x4, QOpenGLFunctions, QPainter, QPen
+from PySide6.QtGui import (
+    QColor,
+    QMatrix4x4,
+    QOpenGLFunctions,
+    QPainter,
+    QPen,
+    QPolygonF,
+)
 from PySide6.QtOpenGL import (
     QOpenGLBuffer,
     QOpenGLShader,
@@ -536,14 +543,66 @@ class Viewport(QOpenGLWidget):
                         else QColor(200, 200, 200))
         pen = QPen(preview_color, 1, Qt.DashLine)
         p.setPen(pen)
-        for (ax, ay), (bx, by) in delegate.preview_segments():
-            x1, y1 = self.view.world_to_screen(ax, ay)
-            x2, y2 = self.view.world_to_screen(bx, by)
-            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+        dim = delegate.preview_dimension()
+        if dim is not None:
+            self._draw_dim_preview(p, dim, preview_color)
+        else:
+            for (ax, ay), (bx, by) in delegate.preview_segments():
+                x1, y1 = self.view.world_to_screen(ax, ay)
+                x2, y2 = self.view.world_to_screen(bx, by)
+                p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
         hit = delegate.snap_hit
         if hit is not None:
             sx, sy = self.view.world_to_screen(hit.x, hit.y)
             self._draw_snap_marker(p, hit.kind, sx, sy)
+
+    def _draw_dim_preview(self, p: QPainter, dim: dict, color: QColor) -> None:
+        """A real-looking dimension preview: extension + dimension lines,
+        arrowheads, and the live measurement — floats with the cursor."""
+        import math
+
+        s = self.view.world_to_screen
+        p1 = QPointF(*s(*dim["p1"]))
+        p2 = QPointF(*s(*dim["p2"]))
+        d1 = QPointF(*s(*dim["d1"]))
+        d2 = QPointF(*s(*dim["d2"]))
+        solid = QPen(color, 1)
+        thin = QPen(color, 1, Qt.DashLine)
+        # extension lines (dashed), dimension line (solid)
+        p.setPen(thin)
+        p.drawLine(p1, d1)
+        p.drawLine(p2, d2)
+        p.setPen(solid)
+        p.drawLine(d1, d2)
+        # arrowheads pointing outward along the dimension line
+        ang = math.atan2(d2.y() - d1.y(), d2.x() - d1.x())
+        self._arrow_head(p, d1, ang, color)
+        self._arrow_head(p, d2, ang + math.pi, color)
+        # measurement text, upright, centred above the dimension line
+        mid = QPointF((d1.x() + d2.x()) / 2, (d1.y() + d2.y()) / 2)
+        p.save()
+        p.setPen(QPen(color))
+        fm = p.fontMetrics()
+        w = fm.horizontalAdvance(dim["text"])
+        p.drawText(QPointF(mid.x() - w / 2, mid.y() - 4), dim["text"])
+        p.restore()
+
+    def _arrow_head(self, p: QPainter, tip: QPointF, angle: float,
+                    color: QColor) -> None:
+        import math
+        size = 9.0
+        a1 = angle + math.radians(20)     # base corners open inward
+        a2 = angle - math.radians(20)
+        poly = QPolygonF([
+            tip,
+            QPointF(tip.x() + size * math.cos(a1), tip.y() + size * math.sin(a1)),
+            QPointF(tip.x() + size * math.cos(a2), tip.y() + size * math.sin(a2)),
+        ])
+        p.save()
+        p.setPen(Qt.NoPen)
+        p.setBrush(color)
+        p.drawPolygon(poly)
+        p.restore()
 
     def _draw_snap_marker(self, p: QPainter, kind: str, x: float, y: float) -> None:
         s = self.MARKER_SIZE / 2.0

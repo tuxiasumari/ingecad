@@ -565,6 +565,15 @@ class ToolController(QObject):
             return []
         return self.tool.preview_segments(self.resolved_point(*self._cursor))
 
+    def preview_dimension(self):
+        """Rich dimension preview (frame + measurement) for the dim tools."""
+        if self.tool is None or self._cursor is None:
+            return None
+        fn = getattr(self.tool, "preview_dimension", None)
+        if fn is None:
+            return None
+        return fn(self.resolved_point(*self._cursor))
+
     # -- grips (selected-entity editing points) --------------------------------
     def grip_points(self):
         """[(x, y, role, handle, index)] for the current idle selection."""
