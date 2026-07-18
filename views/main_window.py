@@ -567,7 +567,7 @@ class MainWindow(QMainWindow):
         tabs.setTabPosition(QTabWidget.South)   # tabs at the bottom (IngeTrazo)
         tabs.addTab(self._layers_panel, tr("Layers"))
         tabs.addTab(self._properties_panel, tr("Properties"))
-        tabs.addTab(self._styles_panel, tr("Styles"))
+        tabs.addTab(self._styles_panel, tr("Palette"))
         collapse_btn = QToolButton(tabs)
         collapse_btn.setText("›")
         collapse_btn.setToolTip(tr("Collapse"))

@@ -137,6 +137,9 @@ class HatchTool(Tool):
 
     # Last-used settings persist for the session (AutoCAD remembers them).
     _last = {"pattern": "SOLID", "scale": 1.0, "angle": 0.0, "color": 256}
+    # Set by the Palette to launch HATCH straight into point-picking with the
+    # already-chosen pattern (skips the style dialog). One-shot.
+    _skip_dialog = False
 
     def start(self) -> None:
         self.name = "HATCH"
@@ -145,6 +148,10 @@ class HatchTool(Tool):
         self.islands: list = []    # island loops (holes)
         self.selected: list = []   # boundary entities from Select objects
         self.settings = dict(HatchTool._last)
+        if HatchTool._skip_dialog:
+            HatchTool._skip_dialog = False   # already have a pattern; go draw
+            self._prompt()
+            return
         chosen = self.ctx.ask_hatch(self.settings)
         if chosen is None:
             self.ctx.finish()

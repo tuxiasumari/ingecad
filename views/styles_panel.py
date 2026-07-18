@@ -1,26 +1,30 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Marco Sumari Tellez and IngeCAD contributors.
-"""Styles panel — Text / Dimension / Hatch, with BricsCAD-style previews.
+"""Palette panel — AutoCAD-style Tool Palettes for hatch / text / dimension.
 
-One category at a time (segmented tabs) keeps the list uncluttered even with
-many styles. Each row carries a thumbnail of how the style looks, and a larger
-preview sits above the property editor. Every change goes through the style
+A gallery of styles with preview thumbnails, one category at a time. Single
+click makes a style current (safe, no drawing); double click *uses* it — hatch
+starts HATCH straight into point-picking with that pattern, text starts DTEXT
+with that style. Editing a style is one step back (the ✎ button or right-click
+→ Edit) so it never crowds the palette. Everything routes through the style
 Commands for exact undo.
 """
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
-    QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QPushButton,
+    QMenu,
     QSpinBox,
     QToolButton,
     QVBoxLayout,
@@ -35,6 +39,7 @@ COMMON_FONTS = ["txt.shx", "simplex.shx", "romans.shx", "isocp.shx",
                 "arial.ttf", "arialbd.ttf", "times.ttf", "LiberationSans.ttf"]
 
 _ICON = QSize(150, 34)
+_TEXT, _DIM, _HATCH = "TEXT", "DIM", "HATCH"
 
 _STYLE = """
 StylesPanel { background: #26262a; }
@@ -42,19 +47,80 @@ StylesPanel QListWidget { background: #1e1e22; color: #d0d0d0; border: 0;
     font-size: 11px; }
 StylesPanel QListWidget::item { padding: 2px; }
 StylesPanel QListWidget::item:selected { background: #35424f; }
-StylesPanel QLabel { color: #c8c8c8; font-size: 11px; }
-StylesPanel #preview { background: #f4f4f4; border: 1px solid #3a3940; }
 StylesPanel QToolButton { border: none; color: #c8c8c8; padding: 3px 6px;
     font-size: 12px; }
 StylesPanel QToolButton:hover, StylesPanel QToolButton:checked {
     background: #35424f; border-radius: 3px; }
-StylesPanel QLineEdit, StylesPanel QComboBox, StylesPanel QDoubleSpinBox,
-StylesPanel QSpinBox { background: #1e1e22; color: #e0e0e0;
-    border: 1px solid #3a3940; padding: 0 3px; font-size: 11px; }
-StylesPanel #head { color: #8ab4d8; font-weight: bold; padding: 2px; }
 """
 
-_TEXT, _DIM, _HATCH = "TEXT", "DIM", "HATCH"
+
+class StyleEditorDialog(QDialog):
+    """Small modal editor for one text or dimension style."""
+
+    def __init__(self, parent, cat: str, name: str, props: dict,
+                 text_styles: list) -> None:
+        super().__init__(parent)
+        self.cat = cat
+        self.setWindowTitle(tr("Edit style: {n}", n=name))
+        self.setMinimumWidth(280)
+        self._widgets: dict = {}
+        form = QFormLayout(self)
+
+        if cat == _TEXT:
+            font = QComboBox()
+            font.setEditable(True)
+            font.addItems(COMMON_FONTS)
+            if props["font"] and props["font"] not in COMMON_FONTS:
+                font.insertItem(0, props["font"])
+            font.setCurrentText(props["font"])
+            self._widgets["font"] = font
+            form.addRow(tr("Font"), font)
+            self._add_num(form, "height", tr("Height"), props["height"], 0, 1e6, 2)
+            self._add_num(form, "width", tr("Width factor"), props["width"], 0.01, 100, 3)
+            self._add_num(form, "oblique", tr("Oblique"), props["oblique"], -85, 85, 1)
+        else:
+            self._add_num(form, "dimtxt", tr("Text height"), props["dimtxt"], 0, 1e6, 2)
+            self._add_num(form, "dimasz", tr("Arrow size"), props["dimasz"], 0, 1e6, 2)
+            self._add_num(form, "dimscale", tr("Overall scale"), props["dimscale"], 0, 1e6, 3)
+            self._add_num(form, "dimexe", tr("Ext. beyond"), props["dimexe"], 0, 1e6, 3)
+            self._add_num(form, "dimexo", tr("Ext. offset"), props["dimexo"], 0, 1e6, 3)
+            dec = QSpinBox()
+            dec.setRange(0, 8)
+            dec.setValue(int(props["dimdec"]))
+            self._widgets["dimdec"] = dec
+            form.addRow(tr("Decimals"), dec)
+            txsty = QComboBox()
+            txsty.addItems(text_styles)
+            cur = props["dimtxsty"] if props["dimtxsty"] in text_styles else (
+                text_styles[0] if text_styles else "Standard")
+            txsty.setCurrentText(cur)
+            self._widgets["dimtxsty"] = txsty
+            form.addRow(tr("Text style"), txsty)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def _add_num(self, form, key, label, value, lo, hi, dec) -> None:
+        sb = QDoubleSpinBox()
+        sb.setRange(lo, hi)
+        sb.setDecimals(dec)
+        sb.setValue(float(value))
+        self._widgets[key] = sb
+        form.addRow(label, sb)
+
+    def props(self) -> dict:
+        out = {}
+        for key, w in self._widgets.items():
+            if isinstance(w, QDoubleSpinBox):
+                out[key] = w.value()
+            elif isinstance(w, QSpinBox):
+                out[key] = w.value()
+            elif isinstance(w, QComboBox):
+                out[key] = w.currentText()
+        return out
 
 
 class StylesPanel(QWidget):
@@ -68,10 +134,9 @@ class StylesPanel(QWidget):
         self._loading = False
         self._cat = _TEXT
 
-        # -- category tabs + actions ------------------------------------------
-        tabs = QHBoxLayout()
-        tabs.setContentsMargins(2, 3, 2, 0)
-        tabs.setSpacing(2)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(2, 3, 2, 0)
+        bar.setSpacing(2)
         self._cat_btns = {}
         for cat, label in ((_TEXT, tr("Text")), (_DIM, tr("Dimension")),
                            (_HATCH, tr("Hatch"))):
@@ -81,40 +146,29 @@ class StylesPanel(QWidget):
             b.setChecked(cat == self._cat)
             b.clicked.connect(lambda _=False, c=cat: self._switch(c))
             self._cat_btns[cat] = b
-            tabs.addWidget(b)
-        tabs.addStretch()
+            bar.addWidget(b)
+        bar.addStretch()
         for glyph, tip, slot in (("＋", tr("New"), self._new),
-                                 ("🗑", tr("Delete"), self._delete),
-                                 ("✓", tr("Set current"), self._set_current)):
+                                 ("✎", tr("Edit"), self._edit),
+                                 ("🗑", tr("Delete"), self._delete)):
             a = QToolButton(self)
             a.setText(glyph)
             a.setToolTip(tip)
             a.clicked.connect(slot)
-            tabs.addWidget(a)
+            bar.addWidget(a)
 
         self.list = QListWidget(self)
         self.list.setIconSize(_ICON)
-        self.list.itemSelectionChanged.connect(self._on_select)
-        self.list.itemDoubleClicked.connect(lambda *_: self._set_current())
-
-        self.preview = QLabel(self)
-        self.preview.setObjectName("preview")
-        self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setFixedHeight(64)
-        self.preview.setVisible(False)
-
-        self._editor_host = QWidget(self)
-        self._editor_layout = QVBoxLayout(self._editor_host)
-        self._editor_layout.setContentsMargins(4, 2, 4, 4)
-        self._editor_layout.setSpacing(3)
+        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list.itemClicked.connect(lambda it: self._set_current(it.data(Qt.UserRole)))
+        self.list.itemDoubleClicked.connect(lambda it: self._activate(it.data(Qt.UserRole)))
+        self.list.customContextMenuRequested.connect(self._menu)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(3)
-        layout.addLayout(tabs)
+        layout.addLayout(bar)
         layout.addWidget(self.list, 1)
-        layout.addWidget(self.preview)
-        layout.addWidget(self._editor_host)
 
         self.refresh()
 
@@ -132,10 +186,7 @@ class StylesPanel(QWidget):
     def refresh(self) -> None:
         self._loading = True
         self.list.clear()
-        self._clear_editor()
-        self.preview.setVisible(False)
-        doc = self._document
-        if doc is not None:
+        if self._document is not None or self._cat == _HATCH:
             if self._cat == _TEXT:
                 self._fill_text()
             elif self._cat == _DIM:
@@ -164,8 +215,6 @@ class StylesPanel(QWidget):
         cur = HatchTool._last.get("pattern", "SOLID")
         for name in HatchDialog.COMMON:
             self._add_item(name, QIcon(_pattern_pixmap(name)), name == cur)
-        self._hatch_editor()          # angle / scale / color for the default
-        self._update_preview(cur)
 
     def _add_item(self, name: str, icon: QIcon, current: bool) -> None:
         label = f"{name}   ({tr('current')})" if current else name
@@ -181,203 +230,135 @@ class StylesPanel(QWidget):
         items = self.list.selectedItems()
         return items[0].data(Qt.UserRole) if items else None
 
-    # -- selection -> preview + editor ----------------------------------------
-    def _on_select(self) -> None:
-        if self._loading:
-            return
-        name = self._selected()
-        if self._cat == _HATCH:
-            # In the hatch gallery, picking a pattern makes it the default.
-            if name is not None:
-                self._pick_hatch_pattern(name)
-            return
-        self._clear_editor()
-        if name is None:
-            return
-        if self._cat == _TEXT:
-            self._text_editor(name)
-        else:
-            self._dim_editor(name)
-        self._update_preview(name)
-
-    def _pick_hatch_pattern(self, name: str) -> None:
-        from tools.blocks import HatchTool
-        HatchTool._last["pattern"] = name
-        for i in range(self.list.count()):
-            it = self.list.item(i)
-            f = it.font()
-            f.setBold(it.data(Qt.UserRole) == name)
-            it.setFont(f)
-        self._update_preview(name)
-        self.changed.emit()
-
-    def _update_preview(self, name: str) -> None:
-        if self._cat == _TEXT:
-            props = style_ops.text_style_props(self._document, name)
-            pm = prev.text_style_pixmap(props, 240, 56)
-        elif self._cat == _DIM:
-            props = style_ops.dim_style_props(self._document, name)
-            pm = prev.dim_style_pixmap(props, 240, 60)
-        else:
-            from views.hatch_dialog import _pattern_pixmap
-            pm = _pattern_pixmap(name).scaled(56, 56)
-        self.preview.setPixmap(pm)
-        self.preview.setVisible(True)
-
-    def _refresh_row_icon(self, name: str) -> None:
-        """Redraw the selected row's thumbnail after an edit (no full rebuild)."""
-        item = self.list.currentItem()
+    # -- context menu ---------------------------------------------------------
+    def _menu(self, pos) -> None:
+        item = self.list.itemAt(pos)
         if item is None:
             return
+        name = item.data(Qt.UserRole)
+        menu = QMenu(self)
+        use = menu.addAction(tr("Use (draw)"))
+        setcur = menu.addAction(tr("Set current"))
+        menu.addSeparator()
+        edit = menu.addAction(tr("Edit..."))
+        newa = menu.addAction(tr("New..."))
+        dele = menu.addAction(tr("Delete"))
+        dele.setEnabled(self._cat != _HATCH and name != "Standard")
+        chosen = menu.exec(self.list.viewport().mapToGlobal(pos))
+        if chosen is use:
+            self._activate(name)
+        elif chosen is setcur:
+            self._set_current(name)
+        elif chosen is edit:
+            self._edit(name)
+        elif chosen is newa:
+            self._new()
+        elif chosen is dele:
+            self._delete()
+
+    # -- single click: set current -------------------------------------------
+    def _set_current(self, name) -> None:
+        if self._loading or name is None:
+            return
+        if self._cat == _HATCH:
+            from tools.blocks import HatchTool
+            HatchTool._last["pattern"] = name
+            self._rebold(name)
+            self.changed.emit()
+            return
+        if self._document is None:
+            return
+        self._make_current(name)
+        self._rebold(name)
+        self.changed.emit()
+
+    def _make_current(self, name: str) -> None:
+        """Set the style current, but skip a no-op (avoids a dead undo step
+        when a single click precedes a double click)."""
+        if self._cat == _TEXT:
+            if name != style_ops.current_text_style(self._document):
+                self.window.history.execute(
+                    style_ops.SetCurrentTextStyleCommand(name))
+        else:
+            if name != style_ops.current_dim_style(self._document):
+                self.window.history.execute(
+                    style_ops.SetCurrentDimStyleCommand(name))
+
+    def _rebold(self, name: str) -> None:
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            is_cur = it.data(Qt.UserRole) == name
+            f = it.font()
+            f.setBold(is_cur)
+            it.setFont(f)
+            base = it.data(Qt.UserRole)
+            it.setText(f"{base}   ({tr('current')})" if is_cur else base)
+
+    # -- double click: use it (draw) ------------------------------------------
+    def _activate(self, name) -> None:
+        if name is None:
+            return
+        if self._cat == _HATCH:
+            from tools.blocks import HatchTool
+            HatchTool._last["pattern"] = name
+            HatchTool._skip_dialog = True         # go straight to point pick
+            self._start_tool("HATCH")
+            self._rebold(name)
+            return
+        if self._document is None:
+            return
+        if self._cat == _TEXT:
+            self._make_current(name)
+            self._rebold(name)
+            self._start_tool("TEXT")
+        else:   # dimension drawing is v0.2; set current for now
+            self._make_current(name)
+            self._rebold(name)
+            self.window.command_line.echo(
+                tr("Dimension style '{n}' is current "
+                   "(creating dimensions arrives in v0.2).", n=name))
+        self.changed.emit()
+
+    def _start_tool(self, command: str) -> None:
+        self.window.tools.start_tool(command)
+        self.window.viewport.setFocus()
+
+    # -- edit / new / delete --------------------------------------------------
+    def _edit(self, name=None) -> None:
+        if name is None or name is False:
+            name = self._selected()
+        if name is None:
+            return
+        if self._cat == _HATCH:
+            from tools.blocks import HatchTool
+            from views.hatch_dialog import HatchDialog
+            dlg = HatchDialog(self.window, HatchTool._last)
+            if dlg.exec():
+                HatchTool._last = dlg.settings()
+                self.refresh()
+            return
+        if self._document is None:
+            return
         if self._cat == _TEXT:
             props = style_ops.text_style_props(self._document, name)
-            item.setIcon(QIcon(prev.text_style_pixmap(
-                props, _ICON.width(), _ICON.height())))
-        elif self._cat == _DIM:
+        else:
             props = style_ops.dim_style_props(self._document, name)
-            item.setIcon(QIcon(prev.dim_style_pixmap(
-                props, _ICON.width(), _ICON.height())))
-
-    def _clear_editor(self) -> None:
-        # Editors are single container widgets (below), so deleting the
-        # widget removes the whole form and its children — no layout leaks.
-        while self._editor_layout.count():
-            w = self._editor_layout.takeAt(0).widget()
-            if w is not None:
-                w.setParent(None)
-                w.deleteLater()
-
-    def _editor_box(self, title: str) -> QFormLayout:
-        """A fresh container widget with a header; returns its form layout."""
-        box = QWidget(self._editor_host)
-        v = QVBoxLayout(box)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(3)
-        head = QLabel(title, box)
-        head.setObjectName("head")
-        v.addWidget(head)
-        form = QFormLayout()
-        form.setContentsMargins(0, 0, 0, 0)
-        form.setSpacing(3)
-        v.addLayout(form)
-        self._editor_layout.addWidget(box)
-        return form
-
-    def _num(self, value, lo, hi, decimals) -> QDoubleSpinBox:
-        sb = QDoubleSpinBox()
-        sb.setRange(lo, hi)
-        sb.setDecimals(decimals)
-        sb.setValue(float(value))
-        sb.setKeyboardTracking(False)
-        return sb
-
-    # -- text editor ----------------------------------------------------------
-    def _text_editor(self, name: str) -> None:
-        props = style_ops.text_style_props(self._document, name)
-        form = self._editor_box(tr("Text style: {n}", n=name))
-        font = QComboBox()
-        font.setEditable(True)
-        font.addItems(COMMON_FONTS)
-        if props["font"] and props["font"] not in COMMON_FONTS:
-            font.insertItem(0, props["font"])
-        font.setCurrentText(props["font"])
-        font.currentTextChanged.connect(
-            lambda v: self._apply_text(name, {"font": v}))
-        height = self._num(props["height"], 0.0, 1e6, 2)
-        height.valueChanged.connect(lambda v: self._apply_text(name, {"height": v}))
-        width = self._num(props["width"], 0.01, 100, 3)
-        width.valueChanged.connect(lambda v: self._apply_text(name, {"width": v}))
-        oblique = self._num(props["oblique"], -85, 85, 1)
-        oblique.valueChanged.connect(lambda v: self._apply_text(name, {"oblique": v}))
-        form.addRow(tr("Font"), font)
-        form.addRow(tr("Height"), height)
-        form.addRow(tr("Width factor"), width)
-        form.addRow(tr("Oblique"), oblique)
-
-    # -- dim editor -----------------------------------------------------------
-    def _dim_editor(self, name: str) -> None:
-        props = style_ops.dim_style_props(self._document, name)
-        form = self._editor_box(tr("Dimension style: {n}", n=name))
-        for var, label, dec in (("dimtxt", tr("Text height"), 2),
-                                ("dimasz", tr("Arrow size"), 2),
-                                ("dimscale", tr("Overall scale"), 3),
-                                ("dimexe", tr("Ext. beyond"), 3),
-                                ("dimexo", tr("Ext. offset"), 3)):
-            sb = self._num(float(props[var]), 0.0, 1e6, dec)
-            sb.valueChanged.connect(lambda v, k=var: self._apply_dim(name, {k: v}))
-            form.addRow(label, sb)
-        dec_sb = QSpinBox()
-        dec_sb.setRange(0, 8)
-        dec_sb.setValue(int(props["dimdec"]))
-        dec_sb.valueChanged.connect(lambda v: self._apply_dim(name, {"dimdec": v}))
-        form.addRow(tr("Decimals"), dec_sb)
-        txsty = QComboBox()
-        names = style_ops.text_style_names(self._document)
-        txsty.addItems(names)
-        cur = props["dimtxsty"] if props["dimtxsty"] in names else (
-            names[0] if names else "Standard")
-        txsty.setCurrentText(cur)
-        txsty.currentTextChanged.connect(
-            lambda v: self._apply_dim(name, {"dimtxsty": v}))
-        form.addRow(tr("Text style"), txsty)
-
-    # -- hatch ----------------------------------------------------------------
-    def _hatch_editor(self) -> None:
-        from tools.blocks import HatchTool
-        from views.layers_panel import fill_color_combo
-        s = HatchTool._last
-        form = self._editor_box(tr("Hatch default"))
-        angle = self._num(s.get("angle", 0.0), -360, 360, 1)
-        angle.valueChanged.connect(lambda v: self._set_hatch("angle", v))
-        scale = self._num(s.get("scale", 1.0), 0.0001, 1e5, 4)
-        scale.valueChanged.connect(lambda v: self._set_hatch("scale", v))
-        color = QComboBox()
-        fill_color_combo(color)
-        idx = color.findData(s.get("color", 256))
-        color.setCurrentIndex(idx if idx >= 0 else 0)
-        color.activated.connect(
-            lambda i, cb=color: self._set_hatch("color", cb.itemData(i)))
-        form.addRow(tr("Angle"), angle)
-        form.addRow(tr("Scale"), scale)
-        form.addRow(tr("Color"), color)
-        btn = QPushButton(tr("All patterns..."))
-        btn.clicked.connect(self._choose_hatch)
-        form.addRow(btn)
-
-    def _set_hatch(self, key: str, value) -> None:
-        from tools.blocks import HatchTool
-        HatchTool._last[key] = value
-        self.changed.emit()
-
-    def _choose_hatch(self) -> None:
-        from tools.blocks import HatchTool
-        from views.hatch_dialog import HatchDialog
-        dlg = HatchDialog(self.window, HatchTool._last)
-        if dlg.exec():
-            HatchTool._last = dlg.settings()
-            self.refresh()
-
-    # -- edits ----------------------------------------------------------------
-    def _apply_text(self, name: str, props: dict) -> None:
-        if self._loading or self._document is None:
+        dlg = StyleEditorDialog(self.window, self._cat, name, props,
+                                style_ops.text_style_names(self._document))
+        if not dlg.exec():
             return
-        self.window.history.execute(style_ops.SetTextStylePropsCommand(name, props))
-        self.window.regen_in_memory()
-        self._refresh_row_icon(name)
-        self._update_preview(name)
-        self.changed.emit()
-
-    def _apply_dim(self, name: str, props: dict) -> None:
-        if self._loading or self._document is None:
-            return
-        self.window.history.execute(style_ops.SetDimStylePropsCommand(name, props))
-        self._refresh_row_icon(name)
-        self._update_preview(name)
+        new = dlg.props()
+        if self._cat == _TEXT:
+            self.window.history.execute(style_ops.SetTextStylePropsCommand(name, new))
+            self.window.regen_in_memory()
+        else:
+            self.window.history.execute(style_ops.SetDimStylePropsCommand(name, new))
+        self.refresh()
         self.changed.emit()
 
     def _new(self) -> None:
         if self._cat == _HATCH:
-            self._choose_hatch()
+            self._edit(self._selected() or "SOLID")   # opens the pattern dialog
             return
         if self._document is None:
             return
@@ -414,16 +395,5 @@ class StylesPanel(QWidget):
             if name == style_ops.current_dim_style(self._document):
                 return
             self.window.history.execute(style_ops.DeleteDimStyleCommand(name))
-        self.refresh()
-        self.changed.emit()
-
-    def _set_current(self) -> None:
-        name = self._selected()
-        if name is None or self._cat == _HATCH or self._document is None:
-            return
-        if self._cat == _TEXT:
-            self.window.history.execute(style_ops.SetCurrentTextStyleCommand(name))
-        else:
-            self.window.history.execute(style_ops.SetCurrentDimStyleCommand(name))
         self.refresh()
         self.changed.emit()
