@@ -49,6 +49,7 @@ class ToolController(QObject):
         self._flatten = 0.01
         self._base_handles: set[str] = set()
         self._clipboard = None   # (list[entity copies], base point) for paste
+        self._ghost_on = False   # a drag ghost (MOVE/COPY/PASTE) is showing
         # Selection state (idle noun set, or the set a tool is acquiring).
         self.index: Optional[GeometryIndex] = None
         self.selection: set[str] = set()
@@ -308,6 +309,9 @@ class ToolController(QObject):
         self._selecting_for = None
         self._window_anchor = None
         self.selection = set()  # command done: highlight goes off
+        if self._ghost_on:
+            self._ghost_on = False
+            self.window.viewport.set_ghost_scene(None)
         self.changed.emit()
 
     def cancel(self) -> None:
@@ -462,6 +466,27 @@ class ToolController(QObject):
                 (wx, wy), threshold_world,
                 from_point=self.tool.last_point if self.tool else None,
             )
+        self._sync_ghost(wx, wy)
+
+    def _sync_ghost(self, wx: float, wy: float) -> None:
+        """MOVE/COPY/PASTE drag preview: the tool exposes ghost_entities +
+        ghost_base; the scene builds ONCE and each hover only updates the
+        translation uniform — the drag stays fluid on any selection size."""
+        tool = self.tool
+        ents = getattr(tool, "ghost_entities", None) if tool is not None else None
+        base = getattr(tool, "ghost_base", None) if tool is not None else None
+        if not ents or base is None:
+            if self._ghost_on:
+                self._ghost_on = False
+                self.window.viewport.set_ghost_scene(None)
+            return
+        if not self._ghost_on:
+            scene = build_scene_for_entities(
+                self.window.document, ents, self._flatten)
+            self.window.viewport.set_ghost_scene(scene)
+            self._ghost_on = True
+        rx, ry = self.resolved_point(wx, wy)
+        self.window.viewport.set_ghost_offset(rx - base[0], ry - base[1])
 
     def in_selection_mode(self) -> bool:
         return self.tool is None or self._selecting_for is not None

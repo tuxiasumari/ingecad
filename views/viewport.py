@@ -109,6 +109,12 @@ class Viewport(QOpenGLWidget):
         self._overlay_scene: Optional[Scene] = None
         self._overlay_dirty = False
         self._overlay_bufs: dict[str, tuple] = {}
+        # Ghost preview (MOVE/COPY/PASTE drag): tessellated ONCE, then only a
+        # per-frame translation in the MVP — no rebuild while the mouse moves.
+        self._ghost_scene: Optional[Scene] = None
+        self._ghost_dirty = False
+        self._ghost_bufs: dict[str, tuple] = {}
+        self._ghost_offset = (0.0, 0.0)
         self._sel_press = None  # pending left press in selection mode
         self._grip_hover = None  # grip under the cursor, if any
         self._pan_mode = False   # interactive PAN command (open-hand cursor)
@@ -141,6 +147,18 @@ class Viewport(QOpenGLWidget):
         """Freshly drawn entities, rendered on top of the base scene."""
         self._overlay_scene = scene
         self._overlay_dirty = True
+        self.update()
+
+    def set_ghost_scene(self, scene: Optional[Scene]) -> None:
+        """The dragged geometry preview; drawn dimmed at the ghost offset."""
+        self._ghost_scene = scene
+        self._ghost_dirty = True
+        self._ghost_offset = (0.0, 0.0)
+        self.update()
+
+    def set_ghost_offset(self, dx: float, dy: float) -> None:
+        """Move the ghost: only the MVP translation changes — free per frame."""
+        self._ghost_offset = (dx, dy)
         self.update()
 
     def hide_handles(self, handles) -> None:
@@ -331,6 +349,8 @@ class Viewport(QOpenGLWidget):
             self._upload_scene()
         if self._overlay_dirty:
             self._upload_overlay()
+        if self._ghost_dirty:
+            self._upload_ghost()
 
         self._program.bind()
 
@@ -378,6 +398,26 @@ class Viewport(QOpenGLWidget):
                 vao.release()
             self._program.release()
 
+        if self._ghost_scene is not None and self._ghost_bufs:
+            # The ghost translates by shifting the vertex origin in the MVP:
+            # same buffers every frame, only this uniform changes.
+            ox, oy = self._ghost_scene.origin
+            dx, dy = self._ghost_offset
+            self._program.bind()
+            self._program.setUniformValue(self._loc_mvp,
+                                          self._mvp(ox + dx, oy + dy))
+            for name, mode in (("triangles", GL_TRIANGLES),
+                               ("lines", GL_LINES),
+                               ("points", GL_POINTS)):
+                buf = self._ghost_bufs.get(name)
+                if buf is None:
+                    continue
+                vao, _vbo, count = buf
+                vao.bind()
+                gl.glDrawArrays(mode, 0, count)
+                vao.release()
+            self._program.release()
+
         self._paint_overlay()
 
     def _upload_overlay(self) -> None:
@@ -395,6 +435,22 @@ class Viewport(QOpenGLWidget):
         # Note: thick-lineweight quads in the overlay are not drawn yet —
         # freshly drawn entities default to thin lines; the next full regen
         # merges them with correct weights.
+
+    def _upload_ghost(self) -> None:
+        for vao, vbo, _count in self._ghost_bufs.values():
+            vbo.destroy()
+            vao.destroy()
+        self._ghost_bufs.clear()
+        self._ghost_dirty = False
+        if self._ghost_scene is None:
+            return
+        for name in ("triangles", "lines", "points"):
+            batch: Batch = getattr(self._ghost_scene, name)
+            if batch.vertex_count:
+                data = batch.data.copy()
+                # dim so the ghost reads as a preview, not committed geometry
+                data["rgba"][:, 3] = (data["rgba"][:, 3] * 0.55).astype("u1")
+                self._ghost_bufs[name] = self._make_vao(data)
 
     def _view_world_rect(self) -> tuple[float, float, float, float]:
         x0, y1 = self.view.screen_to_world(0.0, 0.0)          # top-left
