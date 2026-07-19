@@ -37,50 +37,56 @@ class GeometryIndex:
     def entity(self, handle: str):
         return self.document.doc.entitydb.get(handle)
 
+    @staticmethod
+    def _extract(e, segs, seg_owner, circles, circle_owner,
+                 boxes, box_owner) -> None:
+        t = e.dxftype()
+        h = e.dxf.handle
+        try:
+            if t == "LINE":
+                s, w = e.dxf.start, e.dxf.end
+                segs.append((s.x, s.y, w.x, w.y))
+                seg_owner.append(h)
+            elif t == "LWPOLYLINE":
+                pts = e.get_points("xy")
+                pairs = list(zip(pts, pts[1:]))
+                if e.closed and len(pts) > 2:
+                    pairs.append((pts[-1], pts[0]))
+                for a, b in pairs:
+                    segs.append((a[0], a[1], b[0], b[1]))
+                    seg_owner.append(h)
+            elif t == "CIRCLE":
+                c = e.dxf.center
+                circles.append((c.x, c.y, e.dxf.radius, 0.0, 0.0, math.tau))
+                circle_owner.append(h)
+            elif t == "ARC":
+                c = e.dxf.center
+                a0 = math.radians(e.dxf.start_angle) % math.tau
+                a1 = math.radians(e.dxf.end_angle) % math.tau
+                if a1 <= a0:
+                    a1 += math.tau
+                circles.append((c.x, c.y, e.dxf.radius, 1.0, a0, a1))
+                circle_owner.append(h)
+            elif t == "POINT":
+                l = e.dxf.location
+                segs.append((l.x, l.y, l.x, l.y))
+                seg_owner.append(h)
+            else:
+                box = ezbbox.extents([e], fast=True)
+                if box.has_data:
+                    boxes.append((box.extmin.x, box.extmin.y,
+                                  box.extmax.x, box.extmax.y))
+                    box_owner.append(h)
+        except Exception:
+            pass
+
     def _build(self) -> None:
         segs, seg_owner = [], []
         circles, circle_owner = [], []
         boxes, box_owner = [], []
         for e in self.document.modelspace():
-            t = e.dxftype()
-            h = e.dxf.handle
-            try:
-                if t == "LINE":
-                    s, w = e.dxf.start, e.dxf.end
-                    segs.append((s.x, s.y, w.x, w.y))
-                    seg_owner.append(h)
-                elif t == "LWPOLYLINE":
-                    pts = e.get_points("xy")
-                    pairs = list(zip(pts, pts[1:]))
-                    if e.closed and len(pts) > 2:
-                        pairs.append((pts[-1], pts[0]))
-                    for a, b in pairs:
-                        segs.append((a[0], a[1], b[0], b[1]))
-                        seg_owner.append(h)
-                elif t == "CIRCLE":
-                    c = e.dxf.center
-                    circles.append((c.x, c.y, e.dxf.radius, 0.0, 0.0, math.tau))
-                    circle_owner.append(h)
-                elif t == "ARC":
-                    c = e.dxf.center
-                    a0 = math.radians(e.dxf.start_angle) % math.tau
-                    a1 = math.radians(e.dxf.end_angle) % math.tau
-                    if a1 <= a0:
-                        a1 += math.tau
-                    circles.append((c.x, c.y, e.dxf.radius, 1.0, a0, a1))
-                    circle_owner.append(h)
-                elif t == "POINT":
-                    l = e.dxf.location
-                    segs.append((l.x, l.y, l.x, l.y))
-                    seg_owner.append(h)
-                else:
-                    box = ezbbox.extents([e], fast=True)
-                    if box.has_data:
-                        boxes.append((box.extmin.x, box.extmin.y,
-                                      box.extmax.x, box.extmax.y))
-                        box_owner.append(h)
-            except Exception:
-                continue
+            self._extract(e, segs, seg_owner, circles, circle_owner,
+                          boxes, box_owner)
         self._segs = np.asarray(segs, dtype=np.float64).reshape(-1, 4)
         self._seg_owner = seg_owner
         self._circles = np.asarray(circles, dtype=np.float64).reshape(-1, 6)
@@ -88,6 +94,62 @@ class GeometryIndex:
         self._boxes = np.asarray(boxes, dtype=np.float64).reshape(-1, 4)
         self._box_owner = box_owner
         self._dirty = False
+
+    def remove_handles(self, handles) -> None:
+        """Drop the pick geometry of erased/modified entities (no rebuild).
+
+        Modified entities are re-added via ``add_entities`` right after —
+        the full rebuild pays ezdxf bbox extents for every exotic entity in
+        the drawing (>1 s on a real 10k-entity plan) and used to freeze the
+        first pick after every MOVE/TRIM. No-op while dirty.
+        """
+        if self._dirty:
+            return
+        dead = set(handles)
+        if not dead:
+            return
+        for arr_name, owner_name in (("_segs", "_seg_owner"),
+                                     ("_circles", "_circle_owner"),
+                                     ("_boxes", "_box_owner")):
+            owners = getattr(self, owner_name)
+            if not owners:
+                continue
+            keep = np.fromiter((h not in dead for h in owners), bool,
+                               len(owners))
+            if not keep.all():
+                setattr(self, arr_name, getattr(self, arr_name)[keep])
+                setattr(self, owner_name,
+                        [h for h, k in zip(owners, keep) if k])
+
+    def add_entities(self, entities) -> None:
+        """Append pick geometry of freshly added entities (no full rebuild).
+
+        Additive edits (drawn segments, paste copies) stay O(new) instead of
+        re-walking the whole modelspace. No-op while dirty: the pending
+        rebuild includes them anyway.
+        """
+        if self._dirty:
+            return
+        segs, seg_owner = [], []
+        circles, circle_owner = [], []
+        boxes, box_owner = [], []
+        for e in entities:
+            self._extract(e, segs, seg_owner, circles, circle_owner,
+                          boxes, box_owner)
+        if segs:
+            self._segs = np.vstack(
+                [self._segs, np.asarray(segs, dtype=np.float64).reshape(-1, 4)])
+            self._seg_owner.extend(seg_owner)
+        if circles:
+            self._circles = np.vstack(
+                [self._circles,
+                 np.asarray(circles, dtype=np.float64).reshape(-1, 6)])
+            self._circle_owner.extend(circle_owner)
+        if boxes:
+            self._boxes = np.vstack(
+                [self._boxes,
+                 np.asarray(boxes, dtype=np.float64).reshape(-1, 4)])
+            self._box_owner.extend(box_owner)
 
     # -- queries --------------------------------------------------------------
     def pick(self, cursor: tuple[float, float], tolerance: float) -> Optional[str]:

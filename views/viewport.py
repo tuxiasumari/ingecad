@@ -102,6 +102,9 @@ class Viewport(QOpenGLWidget):
         self._scene_dirty = False
         # Per-primitive GPU buffers: name -> (vao, vbo, vertex_count)
         self._scene_bufs: dict[str, tuple] = {}
+        # Vertex runs whose rgba was zeroed (surgical hide): flushed to the
+        # existing VBOs with partial writes — never a full scene re-upload.
+        self._pending_hide: list[tuple[str, int, int]] = []
         self._view_stack: list[tuple[float, float, float]] = []
         self._zoom_window = False
         self._rubber: Optional[QRubberBand] = None
@@ -180,9 +183,12 @@ class Viewport(QOpenGLWidget):
             for batch_name, first, count in self._scene.handle_ranges.get(h, ()):
                 getattr(self._scene, batch_name).data["rgba"][
                     first:first + count, 3] = 0
+                self._pending_hide.append((batch_name, first, count))
                 touched = True
         if touched:
-            self._scene_dirty = True   # re-upload the mutated buffers
+            if not self._scene_bufs:
+                # nothing uploaded yet: the full upload will carry the zeros
+                self._scene_dirty = True
             self.update()
 
     # -- view stack (ZOOM Previous) -------------------------------------------
@@ -295,6 +301,7 @@ class Viewport(QOpenGLWidget):
             vao.destroy()
         self._scene_bufs.clear()
         self._scene_dirty = False
+        self._pending_hide.clear()  # a full upload carries any zeroed rgba
         if self._scene is None:
             return
         batches: dict[str, Batch] = {
@@ -307,6 +314,26 @@ class Viewport(QOpenGLWidget):
                 self._scene_bufs[name] = self._make_vao(batch.data)
         if self._scene.thick.vertex_count:
             self._scene_bufs["thick"] = self._make_thick_vao(self._scene.thick.data)
+
+    def _flush_hidden_ranges(self) -> None:
+        """Partial VBO writes for surgically hidden entities.
+
+        Re-uploading the whole scene on every hide froze big drawings for a
+        beat on each MOVE/ERASE/grip grab; the hidden runs are a few KB.
+        """
+        pending, self._pending_hide = self._pending_hide, []
+        if self._scene is None:
+            return
+        for batch_name, first, count in pending:
+            buf = self._scene_bufs.get(batch_name)
+            if buf is None:
+                continue
+            _vao, vbo, _n = buf
+            data = getattr(self._scene, batch_name).data
+            raw = data[first:first + count].tobytes()
+            vbo.bind()
+            vbo.write(first * data.dtype.itemsize, raw, len(raw))
+            vbo.release()
 
     def _compile_program(self, vert: str, frag: str) -> QOpenGLShaderProgram:
         prog = QOpenGLShaderProgram(self)
@@ -352,6 +379,8 @@ class Viewport(QOpenGLWidget):
 
         if self._scene_dirty:
             self._upload_scene()
+        elif self._pending_hide:
+            self._flush_hidden_ranges()
         if self._overlay_dirty:
             self._upload_overlay()
         if self._ghost_dirty:

@@ -28,6 +28,9 @@ from tools.edit import EDIT_TOOL_CLASSES
 
 SNAP_PX = 12.0   # aperture in logical pixels
 PICK_PX = 8.0    # pick box half-size in logical pixels
+# Overlay entities beyond this schedule an idle merge into the base scene
+# (the overlay is re-tessellated per edit, so it must not grow unbounded).
+MERGE_THRESHOLD = 50
 
 ALL_TOOL_CLASSES = {**TOOL_CLASSES, **EDIT_TOOL_CLASSES, **BLOCK_TOOL_CLASSES,
                     **DIM_TOOL_CLASSES}
@@ -65,6 +68,13 @@ class ToolController(QObject):
         self._regen_timer.setSingleShot(True)
         self._regen_timer.setInterval(400)
         self._regen_timer.timeout.connect(self._run_deferred_regen)
+        # Additive edits (draw/paste/copy) never NEED a regen — they ride the
+        # overlay — but the overlay is re-tessellated per edit, so merge it
+        # into the base scene after a longer quiet pause to bound its growth.
+        self._merge_timer = QTimer(self)
+        self._merge_timer.setSingleShot(True)
+        self._merge_timer.setInterval(2500)
+        self._merge_timer.timeout.connect(self._run_deferred_regen)
 
     # -- document lifecycle ----------------------------------------------------
     def attach_document(self, document, flatten: Optional[float] = None) -> None:
@@ -345,9 +355,46 @@ class ToolController(QObject):
             self.clear_selection()
 
     # -- command execution and incremental render ------------------------------
+    @staticmethod
+    def _added_entities(command):
+        """New entities of a purely-additive command, else None.
+
+        Additive commands (draw, paste, copy, mirror-keep-source) touch
+        nothing that already exists, so the snap/pick caches can grow
+        incrementally and the base scene needs no urgent regen.
+        """
+        if isinstance(command, actions.AddEntityCommand):
+            return [command.entity] if command.entity is not None else []
+        if isinstance(command, (actions.PasteCommand,
+                                actions.CopyEntitiesCommand)):
+            return list(command.copies)
+        return None
+
+    # Commands whose touched entities are fully known, so the pick index can
+    # be patched (remove + re-add) instead of rebuilt from scratch.
+    _KNOWN_MODIFY = (actions.EraseCommand, actions.TransformCommand,
+                     actions.SetPropertyCommand, actions.ReplaceEntitiesCommand,
+                     actions.CreateBlockCommand, actions.ExplodeCommand)
+
     def _execute(self, command) -> None:
         self.window.history.execute(command)
-        self._invalidate_geometry()
+        added = self._added_entities(command)
+        if added is not None:
+            # Appending beats invalidating: a full cache rebuild walks the
+            # whole modelspace in Python on the NEXT mouse move — that walk
+            # was the per-click lag while drawing on a large file.
+            if self.snap_engine is not None:
+                self.snap_engine.add_entities(added)
+            if self.index is not None:
+                self.index.add_entities(added)
+        elif isinstance(command, self._KNOWN_MODIFY):
+            # snap rebuild is a cheap attribute walk; the pick index is NOT
+            # (ezdxf bbox per exotic entity) — it gets patched surgically in
+            # the display branch below, where the touched sets are known.
+            if self.snap_engine is not None:
+                self.snap_engine.invalidate()
+        else:
+            self._invalidate_geometry()
         if (isinstance(command, actions.ReplaceEntitiesCommand)
                 and self.selection):
             # a trimmed edge keeps its highlight through its survivors
@@ -365,8 +412,24 @@ class ToolController(QObject):
             # A dimension renders into an anonymous block; the overlay can't
             # show that cheaply, so regen now (creating one dim is not hot).
             self.window.regen_in_memory()
-        elif isinstance(command, actions.AddEntityCommand):
+        elif added is not None:
+            # Additive: show through the overlay, no hide, no urgent regen —
+            # paste used to schedule a full regen whose GIL-heavy rebuild
+            # made the NEXT paste stutter on big files.
+            if not isinstance(command, actions.AddEntityCommand):
+                # drawn entities reach the overlay via _draw_commands()
+                self._pending_render.extend(added)
             self._refresh_overlay()
+            if any(e.dxftype() == "DIMENSION" for e in added):
+                # pasted dimension: only a regen renders its block right
+                self._regen_timer.start()
+            elif (len(self._draw_commands()) + len(self._pending_render)
+                    > MERGE_THRESHOLD):
+                # overlay got heavy (re-tessellated per edit): fold it into
+                # the base scene after a quiet pause. Below the threshold no
+                # regen is ever scheduled — a couple of pastes on a big file
+                # must not queue a multi-second background rebuild.
+                self._merge_timer.start()
         else:
             # hide the OLD geometry instantly (surgical, no regen) and show
             # the results NOW through the overlay; the full regen is deferred
@@ -384,19 +447,27 @@ class ToolController(QObject):
                 old_handles = [e.dxf.handle for e in command.sources]
             if old_handles:
                 self.window.viewport.hide_handles(old_handles)
+            new_ents = []
             if isinstance(command, actions.CreateBlockCommand) and command.insert:
-                self._pending_render.append(command.insert)
+                new_ents = [command.insert]
             elif isinstance(command, actions.ExplodeCommand):
                 for _orig, parts in command.pieces:
-                    self._pending_render.extend(parts)
+                    new_ents.extend(parts)
             elif isinstance(command, actions.EraseCommand):
                 pass   # nothing new to show — the hide above IS the result
             else:
                 for attr in ("new_entities", "copies", "entities"):
                     extra = getattr(command, attr, None)
                     if extra:
-                        self._pending_render.extend(extra)
+                        new_ents = list(extra)
                         break
+            self._pending_render.extend(new_ents)
+            if self.index is not None:
+                # patch the pick index: O(touched) instead of a full rebuild
+                # (both calls no-op if the index was invalidated above)
+                self.index.remove_handles(old_handles)
+                self.index.add_entities(
+                    [e for e in new_ents if e.is_alive])
             self._refresh_overlay()
             self._regen_timer.start()
 
@@ -750,7 +821,13 @@ class ToolController(QObject):
             snap.commit(self.window.document)
             self.window.history._undo.append(snap)
             self.window.history._redo.clear()
-            self._invalidate_geometry()   # grips/snap see the new shape
+            # grips/snap see the new shape; the pick index is patched, not
+            # rebuilt (a full rebuild froze the next pick on big files)
+            if self.snap_engine is not None:
+                self.snap_engine.invalidate()
+            if self.index is not None:
+                self.index.remove_handles([handle])
+                self.index.add_entities([entity])
             self._refresh_overlay()
             self._regen_timer.start()
 

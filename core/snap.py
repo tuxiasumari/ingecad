@@ -45,44 +45,78 @@ class SnapEngine:
         self._dirty = True
 
     # -- extraction -----------------------------------------------------------
+    @staticmethod
+    def _extract(e, segs: list, circles: list, arcs: list, points: list) -> None:
+        t = e.dxftype()
+        try:
+            if t == "LINE":
+                s, w = e.dxf.start, e.dxf.end
+                segs.append((s.x, s.y, w.x, w.y))
+            elif t == "LWPOLYLINE":
+                pts = e.get_points("xy")
+                for a, b in zip(pts, pts[1:]):
+                    segs.append((a[0], a[1], b[0], b[1]))
+                if e.closed and len(pts) > 2:
+                    segs.append((pts[-1][0], pts[-1][1], pts[0][0], pts[0][1]))
+            elif t == "CIRCLE":
+                c = e.dxf.center
+                circles.append((c.x, c.y, e.dxf.radius))
+            elif t == "ARC":
+                c = e.dxf.center
+                a0 = math.radians(e.dxf.start_angle)
+                a1 = math.radians(e.dxf.end_angle)
+                if a1 <= a0:
+                    a1 += math.tau
+                arcs.append((c.x, c.y, e.dxf.radius, a0, a1))
+            elif t == "POINT":
+                l = e.dxf.location
+                points.append((l.x, l.y))
+        except Exception:
+            pass  # malformed entity: not snappable, not fatal
+
     def _build(self) -> None:
         segs: list[tuple] = []
         circles: list[tuple] = []
         arcs: list[tuple] = []
         points: list[tuple] = []
-        msp = self.document.modelspace()
-        for e in msp:
-            t = e.dxftype()
-            try:
-                if t == "LINE":
-                    s, w = e.dxf.start, e.dxf.end
-                    segs.append((s.x, s.y, w.x, w.y))
-                elif t == "LWPOLYLINE":
-                    pts = e.get_points("xy")
-                    for a, b in zip(pts, pts[1:]):
-                        segs.append((a[0], a[1], b[0], b[1]))
-                    if e.closed and len(pts) > 2:
-                        segs.append((pts[-1][0], pts[-1][1], pts[0][0], pts[0][1]))
-                elif t == "CIRCLE":
-                    c = e.dxf.center
-                    circles.append((c.x, c.y, e.dxf.radius))
-                elif t == "ARC":
-                    c = e.dxf.center
-                    a0 = math.radians(e.dxf.start_angle)
-                    a1 = math.radians(e.dxf.end_angle)
-                    if a1 <= a0:
-                        a1 += math.tau
-                    arcs.append((c.x, c.y, e.dxf.radius, a0, a1))
-                elif t == "POINT":
-                    l = e.dxf.location
-                    points.append((l.x, l.y))
-            except Exception:
-                continue  # malformed entity: not snappable, not fatal
+        for e in self.document.modelspace():
+            self._extract(e, segs, circles, arcs, points)
         self._segs = np.asarray(segs, dtype=np.float64).reshape(-1, 4)
         self._circles = np.asarray(circles, dtype=np.float64).reshape(-1, 3)
         self._arcs = np.asarray(arcs, dtype=np.float64).reshape(-1, 5)
         self._points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
         self._dirty = False
+
+    def add_entities(self, entities) -> None:
+        """Append the geometry of freshly added entities to the cache.
+
+        Purely additive edits (LINE segments, paste copies) must not pay a
+        full modelspace walk on the next cursor move — on a large drawing
+        that rebuild is the per-click lag. No-op while dirty: the pending
+        rebuild will pick the entities up anyway.
+        """
+        if self._dirty:
+            return
+        segs: list[tuple] = []
+        circles: list[tuple] = []
+        arcs: list[tuple] = []
+        points: list[tuple] = []
+        for e in entities:
+            self._extract(e, segs, circles, arcs, points)
+        if segs:
+            self._segs = np.vstack(
+                [self._segs, np.asarray(segs, dtype=np.float64).reshape(-1, 4)])
+        if circles:
+            self._circles = np.vstack(
+                [self._circles,
+                 np.asarray(circles, dtype=np.float64).reshape(-1, 3)])
+        if arcs:
+            self._arcs = np.vstack(
+                [self._arcs, np.asarray(arcs, dtype=np.float64).reshape(-1, 5)])
+        if points:
+            self._points = np.vstack(
+                [self._points,
+                 np.asarray(points, dtype=np.float64).reshape(-1, 2)])
 
     # -- query ----------------------------------------------------------------
     def find(
