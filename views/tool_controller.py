@@ -12,7 +12,7 @@ import math
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
 from core import actions
 from core.coords import CoordinateError, parse_point
@@ -31,6 +31,31 @@ PICK_PX = 8.0    # pick box half-size in logical pixels
 # Overlay entities beyond this schedule an idle merge into the base scene
 # (the overlay is re-tessellated per edit, so it must not grow unbounded).
 MERGE_THRESHOLD = 50
+# MOVE/COPY/PASTE commits at or above this size reuse the ghost tessellation
+# as a "stamp" instead of re-tessellating into the overlay (a 3000-entity
+# paste re-tessellated ~3.5 s on the UI thread; the stamp costs nothing).
+STAMP_MIN = 25
+
+
+class _GhostWorker(QThread):
+    """Tessellate the drag preview off the UI thread (big selections take
+    seconds; Ctrl+V must not freeze). Same GIL/discard rules as RegenWorker."""
+
+    done = Signal(object, object)   # ents list, Scene | None
+
+    def __init__(self, document, ents, flatten: float) -> None:
+        super().__init__()
+        self._document = document
+        self._ents = ents
+        self._flatten = flatten
+
+    def run(self) -> None:
+        try:
+            scene = build_scene_for_entities(
+                self._document, self._ents, self._flatten)
+        except Exception:
+            scene = None    # doc mutated mid-read: caller falls back to regen
+        self.done.emit(self._ents, scene)
 
 ALL_TOOL_CLASSES = {**TOOL_CLASSES, **EDIT_TOOL_CLASSES, **BLOCK_TOOL_CLASSES,
                     **DIM_TOOL_CLASSES}
@@ -52,7 +77,16 @@ class ToolController(QObject):
         self._flatten = 0.01
         self._base_handles: set[str] = set()
         self._clipboard = None   # (list[entity copies], base point) for paste
+        self._clipboard_src: list = []   # source handles aligned w/ clipboard
         self._ghost_on = False   # a drag ghost (MOVE/COPY/PASTE) is showing
+        # Ghost tessellation is expensive on big selections: cache it per
+        # entity-list identity and build it OFF the UI thread.
+        self._ghost_cache: Optional[tuple] = None    # (ents list, Scene)
+        self._ghost_workers: set = set()             # live tessellators
+        self._ghost_wanted: Optional[list] = None
+        # Stamped commits (big MOVE/COPY/PASTE): id(command) -> record.
+        self._stamp_records: dict = {}
+        self._pending_stamps: list = []   # record keys awaiting ghost scene
         # Selection state (idle noun set, or the set a tool is acquiring).
         self.index: Optional[GeometryIndex] = None
         self.selection: set[str] = set()
@@ -80,6 +114,11 @@ class ToolController(QObject):
     def attach_document(self, document, flatten: Optional[float] = None) -> None:
         self.snap_engine = SnapEngine(document)
         self.index = GeometryIndex(document)
+        self._ghost_cache = None
+        self._ghost_wanted = None
+        self._stamp_records = {}
+        self._pending_stamps = []
+        self.window.viewport.clear_stamps()
         self.selection = set()
         self._selecting_for = None
         self._window_anchor = None
@@ -98,6 +137,10 @@ class ToolController(QObject):
             if c.entity is not None
         }
         self._pending_render = []
+        # stamped placements are part of the fresh base scene now
+        self._stamp_records = {}
+        self._pending_stamps = []
+        self.window.viewport.clear_stamps()
         self._refresh_overlay()
 
     # -- toggles ---------------------------------------------------------------
@@ -228,13 +271,23 @@ class ToolController(QObject):
         entities = self._selection_entities()
         if not entities:
             return False
-        try:
-            from ezdxf import bbox
-            ext = bbox.extents(entities)
-            base = (ext.extmin.x, ext.extmin.y)
-        except Exception:
-            base = (0.0, 0.0)
+        # base point from the cached pick rows: ezdxf bbox walks INSERT
+        # contents recursively and cost ~1.6 s on a big selection
+        bounds = (self.index.bounds_of(self.selection)
+                  if self.index is not None else None)
+        if bounds is not None:
+            base = (bounds[0], bounds[1])
+        else:
+            try:
+                from ezdxf import bbox
+                ext = bbox.extents(entities, fast=True)
+                base = (ext.extmin.x, ext.extmin.y)
+            except Exception:
+                base = (0.0, 0.0)
         self._clipboard = ([e.copy() for e in entities], base)
+        # source handles (aligned with the clipboard) let paste register its
+        # copies in the pick index by translating the sources' cached rows
+        self._clipboard_src = [e.dxf.handle for e in entities]
         if cut:
             self._execute(actions.EraseCommand(entities))
             self.clear_selection()
@@ -370,6 +423,108 @@ class ToolController(QObject):
             return list(command.copies)
         return None
 
+    @staticmethod
+    def _pure_translation(matrix):
+        """(dx, dy) if the Matrix44 is a pure 2D translation, else None."""
+        v = list(matrix)
+        ident = (1.0, 0.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0, 0.0,
+                 0.0, 0.0, 1.0, 0.0)
+        if (all(abs(v[i] - ident[i]) <= 1e-12 for i in range(12))
+                and abs(v[14]) <= 1e-12):
+            return (v[12], v[13])
+        return None
+
+    def _stamp_setup(self, command, size_check):
+        """((dx, dy), ghost list) when this commit can reuse the ghost.
+
+        Stampable: a translation-only MOVE/COPY/PASTE of a big set whose
+        source entities are exactly the active tool's ghost list — then the
+        already-tessellated (or in-flight) ghost scene drawn at the drop
+        offset replaces the overlay re-tessellation entirely.
+        """
+        if len(size_check) < STAMP_MIN:
+            return None
+        if isinstance(command, actions.PasteCommand):
+            offset, srcs = (command.dx, command.dy), command.sources
+        elif isinstance(command, (actions.CopyEntitiesCommand,
+                                  actions.TransformCommand)):
+            offset = self._pure_translation(command.matrix)
+            srcs = getattr(command, "sources", None) or command.entities
+        else:
+            return None
+        if offset is None:
+            return None
+        tool = self.tool
+        ghost = getattr(tool, "ghost_entities", None) if tool is not None else None
+        if (ghost is None or len(ghost) != len(srcs)
+                or any(a is not b for a, b in zip(ghost, srcs))):
+            return None
+        return offset, ghost
+
+    def _commit_stamp(self, command, stamp, hidden) -> None:
+        (dx, dy), ghost_ents = stamp
+        key = id(command)
+        rec = {"command": command, "ents": ghost_ents, "dx": dx, "dy": dy,
+               "scene": None, "hidden": list(hidden or [])}
+        rec["shown"] = rec["hidden"] or [
+            c.dxf.handle for c in getattr(command, "copies", None) or []]
+        self._stamp_records[key] = rec
+        if self._ghost_cache is not None and self._ghost_cache[0] is ghost_ents:
+            rec["scene"] = self._ghost_cache[1]
+            self.window.viewport.add_stamp(key, rec["scene"], dx, dy)
+        else:
+            # ghost still tessellating: the stamp appears when it lands
+            self._pending_stamps.append(key)
+        self._merge_timer.start()
+
+    def _index_register_added(self, command, added) -> None:
+        """Pick-index registration for new entities, translating the source
+        rows when they are known (paste/copy) — no per-entity ezdxf bbox."""
+        src = None
+        offset = None
+        if isinstance(command, actions.PasteCommand):
+            # PasteCommand copies the source list — compare element-wise
+            clip = self._clipboard[0] if self._clipboard else None
+            if (clip is not None and len(clip) == len(command.sources)
+                    and len(self._clipboard_src) == len(added)
+                    and all(a is b for a, b in zip(clip, command.sources))):
+                src, offset = self._clipboard_src, (command.dx, command.dy)
+        elif isinstance(command, actions.CopyEntitiesCommand):
+            offset = self._pure_translation(command.matrix)
+            if offset is not None:
+                src = [e.dxf.handle for e in command.sources]
+        if src is not None and len(src) == len(added):
+            pairs = list(zip(src, (c.dxf.handle for c in added)))
+            missing = self.index.add_translated(pairs, *offset)
+            if missing:
+                self.index.add_entities(
+                    [c for s, c in zip(src, added) if s in missing])
+        else:
+            self.index.add_entities(added)
+
+    def _drop_conflicting_stamps(self, handles) -> None:
+        """An edit touched entities shown by a stamp: retire that stamp and
+        let the survivors ride the overlay (stamps must never show stale
+        geometry). The commands stay undoable through the generic path."""
+        if not self._stamp_records or not handles:
+            return
+        touched = set(handles)
+        for key, rec in list(self._stamp_records.items()):
+            if touched.isdisjoint(rec["shown"]):
+                continue
+            self.window.viewport.remove_stamp(key)
+            if key in self._pending_stamps:
+                self._pending_stamps.remove(key)
+            del self._stamp_records[key]
+            cmd = rec["command"]
+            ents = (getattr(cmd, "entities", None) if rec["hidden"]
+                    else getattr(cmd, "copies", None)) or []
+            self._pending_render.extend(
+                e for e in ents
+                if e.is_alive and e.dxf.owner is not None
+                and e not in self._pending_render)
+
     # Commands whose touched entities are fully known, so the pick index can
     # be patched (remove + re-add) instead of rebuilt from scratch.
     _KNOWN_MODIFY = (actions.EraseCommand, actions.TransformCommand,
@@ -386,7 +541,7 @@ class ToolController(QObject):
             if self.snap_engine is not None:
                 self.snap_engine.add_entities(added)
             if self.index is not None:
-                self.index.add_entities(added)
+                self._index_register_added(command, added)
         elif isinstance(command, self._KNOWN_MODIFY):
             pass  # both caches are patched in the display branch below,
                   # where the touched entity sets are known
@@ -413,21 +568,52 @@ class ToolController(QObject):
             # Additive: show through the overlay, no hide, no urgent regen —
             # paste used to schedule a full regen whose GIL-heavy rebuild
             # made the NEXT paste stutter on big files.
-            if not isinstance(command, actions.AddEntityCommand):
-                # drawn entities reach the overlay via _draw_commands()
-                self._pending_render.extend(added)
-            self._refresh_overlay()
+            stamp = self._stamp_setup(command, added)
+            if stamp is not None:
+                # big paste/copy: the ghost tessellation IS the result —
+                # draw it as a stamp at the drop offset, zero re-tessellation
+                self._commit_stamp(command, stamp, hidden=None)
+            else:
+                if not isinstance(command, actions.AddEntityCommand):
+                    # drawn entities reach the overlay via _draw_commands()
+                    self._pending_render.extend(added)
+                self._refresh_overlay()
             if any(e.dxftype() == "DIMENSION" for e in added):
                 # pasted dimension: only a regen renders its block right
                 self._regen_timer.start()
-            elif (len(self._draw_commands()) + len(self._pending_render)
+            elif stamp is not None or (
+                    len(self._draw_commands()) + len(self._pending_render)
                     > MERGE_THRESHOLD):
-                # overlay got heavy (re-tessellated per edit): fold it into
-                # the base scene after a quiet pause. Below the threshold no
-                # regen is ever scheduled — a couple of pastes on a big file
-                # must not queue a multi-second background rebuild.
+                # overlay/stamps got heavy: fold them into the base scene
+                # after a quiet pause. Below the threshold no regen is ever
+                # scheduled — a couple of pastes on a big file must not
+                # queue a multi-second background rebuild.
                 self._merge_timer.start()
         else:
+            if isinstance(command, actions.TransformCommand):
+                stamp = self._stamp_setup(command, command.entities)
+                if stamp is not None:
+                    # big MOVE: hide the base copies and draw the ghost
+                    # tessellation at the destination — no overlay rebuild
+                    handles = [e.dxf.handle for e in command.entities]
+                    had = len(self._stamp_records)
+                    self._drop_conflicting_stamps(handles)
+                    if len(self._stamp_records) != had:
+                        # a re-move: the new stamp shows these entities, so
+                        # they must not ALSO ride the overlay
+                        hs = set(handles)
+                        self._pending_render = [
+                            e for e in self._pending_render
+                            if not (e.is_alive and e.dxf.handle in hs)]
+                        self._refresh_overlay()
+                    self.window.viewport.hide_handles(handles)
+                    (dx, dy), _ents = stamp
+                    if self.index is not None:
+                        self.index.translate_handles(handles, dx, dy)
+                    if self.snap_engine is not None:
+                        self.snap_engine.translate_handles(handles, dx, dy)
+                    self._commit_stamp(command, stamp, hidden=handles)
+                    return
             # hide the OLD geometry instantly (surgical, no regen) and show
             # the results NOW through the overlay; the full regen is deferred
             old_handles = []
@@ -443,6 +629,7 @@ class ToolController(QObject):
                                       actions.ExplodeCommand)):
                 old_handles = [e.dxf.handle for e in command.sources]
             if old_handles:
+                self._drop_conflicting_stamps(old_handles)
                 self.window.viewport.hide_handles(old_handles)
             new_ents = []
             if isinstance(command, actions.CreateBlockCommand) and command.insert:
@@ -462,12 +649,21 @@ class ToolController(QObject):
             alive = [e for e in new_ents if e.is_alive]
             # patch both caches: O(touched) instead of a full rebuild
             # (all calls no-op if the cache was invalidated above)
-            if self.index is not None:
-                self.index.remove_handles(old_handles)
-                self.index.add_entities(alive)
-            if self.snap_engine is not None:
-                self.snap_engine.remove_handles(old_handles)
-                self.snap_engine.add_entities(alive)
+            shift = (self._pure_translation(command.matrix)
+                     if isinstance(command, actions.TransformCommand) else None)
+            if shift is not None:
+                # MOVE: shifting rows in place skips re-extraction entirely
+                if self.index is not None:
+                    self.index.translate_handles(old_handles, *shift)
+                if self.snap_engine is not None:
+                    self.snap_engine.translate_handles(old_handles, *shift)
+            else:
+                if self.index is not None:
+                    self.index.remove_handles(old_handles)
+                    self.index.add_entities(alive)
+                if self.snap_engine is not None:
+                    self.snap_engine.remove_handles(old_handles)
+                    self.snap_engine.add_entities(alive)
             self._refresh_overlay()
             # the result is already on screen (hide + overlay); reconcile on
             # the IDLE timer — the old 400 ms regen landed exactly when the
@@ -499,6 +695,10 @@ class ToolController(QObject):
             if removed:
                 self.window.viewport.hide_handles(removed)
             self.window.regen_in_memory()
+            return
+        rec = self._stamp_records.get(id(command))
+        if rec is not None:
+            self._history_toggle_stamp(command, rec)
             return
         touched = []
         for attr in ("entities", "old_entities", "new_entities", "copies",
@@ -540,6 +740,53 @@ class ToolController(QObject):
             self._invalidate_geometry()
             self._refresh_overlay()
             self._regen_timer.start()
+
+    def _history_toggle_stamp(self, command, rec) -> None:
+        """Undo/redo of a stamped MOVE/COPY/PASTE: flip the stamp instead of
+        re-tessellating anything. Stamp showing -> this is the undo."""
+        key = id(command)
+        vp = self.window.viewport
+        was_on = vp.remove_stamp(key)
+        if not was_on and key in self._pending_stamps:
+            self._pending_stamps.remove(key)
+            was_on = True
+        dx, dy = rec["dx"], rec["dy"]
+        if was_on:                       # UNDO
+            if rec["hidden"]:            # MOVE: base copies are valid again
+                vp.unhide_handles(rec["hidden"])
+                if self.index is not None:
+                    self.index.translate_handles(rec["hidden"], -dx, -dy)
+                if self.snap_engine is not None:
+                    self.snap_engine.translate_handles(rec["hidden"], -dx, -dy)
+            else:                        # PASTE/COPY: the copies are gone
+                dead = list(getattr(command, "removed_handles", None) or [])
+                if self.index is not None:
+                    self.index.remove_handles(dead)
+                if self.snap_engine is not None:
+                    self.snap_engine.remove_handles(dead)
+        else:                            # REDO
+            if rec["hidden"]:
+                vp.hide_handles(rec["hidden"])
+                if self.index is not None:
+                    self.index.translate_handles(rec["hidden"], dx, dy)
+                if self.snap_engine is not None:
+                    self.snap_engine.translate_handles(rec["hidden"], dx, dy)
+            else:
+                copies = list(getattr(command, "copies", None) or [])
+                if self.snap_engine is not None:
+                    self.snap_engine.add_entities(copies)
+                if self.index is not None:
+                    self._index_register_added(command, copies)
+                rec["shown"] = [c.dxf.handle for c in copies]
+            if (rec["scene"] is None and self._ghost_cache is not None
+                    and self._ghost_cache[0] is rec["ents"]):
+                rec["scene"] = self._ghost_cache[1]
+            if rec["scene"] is not None:
+                vp.add_stamp(key, rec["scene"], dx, dy)
+            else:
+                self._pending_stamps.append(key)
+        self._merge_timer.start()
+        self.changed.emit()
 
     def _draw_commands(self):
         return [c for c in self.window.history._undo
@@ -583,8 +830,9 @@ class ToolController(QObject):
 
     def _sync_ghost(self, wx: float, wy: float) -> None:
         """MOVE/COPY/PASTE drag preview: the tool exposes ghost_entities +
-        ghost_base; the scene builds ONCE and each hover only updates the
-        translation uniform — the drag stays fluid on any selection size."""
+        ghost_base; the scene builds ONCE (in the background, cached per
+        entity list) and each hover only updates the translation uniform —
+        the drag stays fluid on any selection size."""
         tool = self.tool
         ents = getattr(tool, "ghost_entities", None) if tool is not None else None
         base = getattr(tool, "ghost_base", None) if tool is not None else None
@@ -594,12 +842,61 @@ class ToolController(QObject):
                 self.window.viewport.set_ghost_scene(None)
             return
         if not self._ghost_on:
-            scene = build_scene_for_entities(
-                self.window.document, ents, self._flatten)
+            scene = self._ghost_scene_for(ents)
+            if scene is None:
+                return   # tessellating in the background; pops in when ready
             self.window.viewport.set_ghost_scene(scene)
             self._ghost_on = True
         rx, ry = self.resolved_point(wx, wy)
         self.window.viewport.set_ghost_offset(rx - base[0], ry - base[1])
+
+    def _ghost_scene_for(self, ents):
+        """Cached ghost scene, or None while a worker tessellates it."""
+        if self._ghost_cache is not None and self._ghost_cache[0] is ents:
+            return self._ghost_cache[1]
+        if self._ghost_wanted is not ents:
+            self._ghost_wanted = ents
+            worker = _GhostWorker(self.window.document, ents, self._flatten)
+            worker.done.connect(self._on_ghost_done)
+            self._ghost_workers.add(worker)
+            worker.start()
+        return None
+
+    def _on_ghost_done(self, ents, scene) -> None:
+        worker = self.sender()
+        if worker in self._ghost_workers:
+            worker.wait()   # thread has emitted; joins immediately
+            self._ghost_workers.discard(worker)
+        if scene is not None:
+            if self._ghost_wanted is ents:
+                self._ghost_cache = (ents, scene)
+            tool = self.tool
+            if (not self._ghost_on and tool is not None
+                    and getattr(tool, "ghost_entities", None) is ents):
+                self.window.viewport.set_ghost_scene(scene)
+                self._ghost_on = True
+                base = getattr(tool, "ghost_base", None)
+                if base is not None and self._cursor is not None:
+                    rx, ry = self.resolved_point(*self._cursor)
+                    self.window.viewport.set_ghost_offset(
+                        rx - base[0], ry - base[1])
+        # commits that happened before the tessellation landed
+        for key in list(self._pending_stamps):
+            rec = self._stamp_records.get(key)
+            if rec is None:
+                self._pending_stamps.remove(key)
+                continue
+            if rec["ents"] is not ents:
+                continue
+            self._pending_stamps.remove(key)
+            if scene is not None:
+                rec["scene"] = scene
+                self.window.viewport.add_stamp(key, scene, rec["dx"], rec["dy"])
+            else:
+                # tessellation failed: let a background regen reconcile
+                del self._stamp_records[key]
+                self._regen_timer.start()
+        self.changed.emit()
 
     def in_selection_mode(self) -> bool:
         return self.tool is None or self._selecting_for is not None
@@ -844,6 +1141,7 @@ class ToolController(QObject):
             self.window.history._redo.clear()
             # grips/snap see the new shape; both caches are patched, not
             # rebuilt (a full rebuild froze the next pick on big files)
+            self._drop_conflicting_stamps([handle])
             if self.snap_engine is not None:
                 self.snap_engine.remove_handles([handle])
                 self.snap_engine.add_entities([entity])

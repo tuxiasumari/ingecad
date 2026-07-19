@@ -143,6 +143,32 @@ class SnapEngine:
                 [self._points,
                  np.asarray(points, dtype=np.float64).reshape(-1, 2)])
 
+    def translate_handles(self, handles, dx: float, dy: float) -> None:
+        """Shift the cached geometry of MOVEd entities in place.
+
+        A pure translation needs no re-extraction at all — O(rows), pure
+        NumPy, no ezdxf calls. No-op while dirty.
+        """
+        if self._dirty:
+            return
+        moved = set(handles)
+        if not moved:
+            return
+        for arr_name, owner_name, cols in (
+                ("_segs", "_seg_owner", (0, 1, 2, 3)),
+                ("_circles", "_circle_owner", (0, 1)),
+                ("_arcs", "_arc_owner", (0, 1)),
+                ("_points", "_point_owner", (0, 1))):
+            owners = getattr(self, owner_name)
+            if not owners:
+                continue
+            mask = np.fromiter((h in moved for h in owners), bool, len(owners))
+            if not mask.any():
+                continue
+            arr = getattr(self, arr_name)
+            for c in cols:
+                arr[mask, c] += dx if c % 2 == 0 else dy
+
     def remove_handles(self, handles) -> None:
         """Drop the snap geometry of erased/modified entities (no rebuild).
 

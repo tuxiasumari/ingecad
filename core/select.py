@@ -95,6 +95,66 @@ class GeometryIndex:
         self._box_owner = box_owner
         self._dirty = False
 
+    def translate_handles(self, handles, dx: float, dy: float) -> None:
+        """Shift the pick geometry of MOVEd entities in place (O(rows),
+        pure NumPy — no ezdxf bbox calls). No-op while dirty."""
+        if self._dirty:
+            return
+        moved = set(handles)
+        if not moved:
+            return
+        for arr_name, owner_name, xc, yc in (
+                ("_segs", "_seg_owner", (0, 2), (1, 3)),
+                ("_circles", "_circle_owner", (0,), (1,)),
+                ("_boxes", "_box_owner", (0, 2), (1, 3))):
+            owners = getattr(self, owner_name)
+            if not owners:
+                continue
+            mask = np.fromiter((h in moved for h in owners), bool, len(owners))
+            if not mask.any():
+                continue
+            arr = getattr(self, arr_name)
+            for c in xc:
+                arr[mask, c] += dx
+            for c in yc:
+                arr[mask, c] += dy
+
+    def add_translated(self, pairs, dx: float, dy: float) -> set:
+        """Register pasted/copied entities by translating their SOURCE rows.
+
+        ``pairs`` is ``[(src_handle, new_handle)]``. The sources are still in
+        the drawing (Ctrl+C copies, it does not consume), so their rows are
+        already here — copying + shifting them skips the ezdxf bbox extents
+        walk that made a 3000-entity paste pay ~0.7 s. Returns the source
+        handles that had NO rows (deleted/changed since): the caller falls
+        back to ``add_entities`` for those. No-op while dirty (returns all).
+        """
+        if self._dirty:
+            return {src for src, _new in pairs}
+        mapping = dict(pairs)
+        found: set = set()
+        for arr_name, owner_name, xc, yc in (
+                ("_segs", "_seg_owner", (0, 2), (1, 3)),
+                ("_circles", "_circle_owner", (0,), (1,)),
+                ("_boxes", "_box_owner", (0, 2), (1, 3))):
+            owners = getattr(self, owner_name)
+            if not owners:
+                continue
+            rows = [i for i, h in enumerate(owners) if h in mapping]
+            if not rows:
+                continue
+            arr = getattr(self, arr_name)
+            block = arr[rows].copy()
+            for c in xc:
+                block[:, c] += dx
+            for c in yc:
+                block[:, c] += dy
+            setattr(self, arr_name, np.vstack([arr, block]))
+            for i in rows:
+                owners.append(mapping[owners[i]])
+                found.add(owners[i])
+        return set(mapping) - found
+
     def remove_handles(self, handles) -> None:
         """Drop the pick geometry of erased/modified entities (no rebuild).
 
@@ -225,6 +285,37 @@ class GeometryIndex:
             if not (b[2] < x0 or b[0] > x1 or b[3] < y0 or b[1] > y1):
                 hit.add(self._box_owner[i])
         return sorted(hit)
+
+    def bounds_of(self, handles: Iterable[str]):
+        """(min_x, min_y, max_x, max_y) of the given entities from the cached
+        rows, or None. Ctrl+C needs a base point; ezdxf bbox.extents walks
+        INSERT contents recursively (~1.6 s on a 3000-entity selection)."""
+        if self._dirty:
+            return None
+        wanted = set(handles)
+        min_x = min_y = np.inf
+        max_x = max_y = -np.inf
+        segs = self.segments_of(wanted)
+        if len(segs):
+            min_x = min(min_x, segs[:, (0, 2)].min())
+            max_x = max(max_x, segs[:, (0, 2)].max())
+            min_y = min(min_y, segs[:, (1, 3)].min())
+            max_y = max(max_y, segs[:, (1, 3)].max())
+        circles = self.circles_of(wanted)
+        if len(circles):
+            min_x = min(min_x, (circles[:, 0] - circles[:, 2]).min())
+            max_x = max(max_x, (circles[:, 0] + circles[:, 2]).max())
+            min_y = min(min_y, (circles[:, 1] - circles[:, 2]).min())
+            max_y = max(max_y, (circles[:, 1] + circles[:, 2]).max())
+        boxes = self.boxes_of(wanted)
+        if len(boxes):
+            min_x = min(min_x, boxes[:, 0].min())
+            max_x = max(max_x, boxes[:, 2].max())
+            min_y = min(min_y, boxes[:, 1].min())
+            max_y = max(max_y, boxes[:, 3].max())
+        if min_x > max_x:
+            return None
+        return (float(min_x), float(min_y), float(max_x), float(max_y))
 
     def segments_of(self, handles: Iterable[str]) -> np.ndarray:
         """Pick segments of the given entities (for highlight drawing)."""

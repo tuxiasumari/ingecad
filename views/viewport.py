@@ -118,6 +118,14 @@ class Viewport(QOpenGLWidget):
         self._ghost_dirty = False
         self._ghost_bufs: dict[str, tuple] = {}
         self._ghost_offset = (0.0, 0.0)
+        # Stamps: committed MOVE/COPY/PASTE results drawn as the ghost scene
+        # at fixed offsets — the pasted geometry costs ZERO re-tessellation
+        # until the idle merge folds it into the base scene. One group per
+        # scene, many offsets per group (repeated pastes share the buffers).
+        self._stamps: list[dict] = []       # {scene, bufs|None, offsets:{key:(dx,dy)}}
+        self._retired_stamp_bufs: list[dict] = []   # freed on next paintGL
+        # Saved alpha bytes of hidden entities, so undo can un-hide them.
+        self._hidden_rgba: dict = {}
         self._sel_press = None  # pending left press in selection mode
         self._grip_hover = None  # grip under the cursor, if any
         self._pan_mode = False   # interactive PAN command (open-hand cursor)
@@ -134,6 +142,38 @@ class Viewport(QOpenGLWidget):
         """Adopt a packed scene; the GL upload happens on the next frame."""
         self._scene = scene
         self._scene_dirty = True
+        self._hidden_rgba = {}   # saved alphas referenced the old scene
+        self.update()
+
+    # -- stamps (committed ghost geometry, zero re-tessellation) --------------
+    def add_stamp(self, key, scene: Scene, dx: float, dy: float) -> None:
+        for group in self._stamps:
+            if group["scene"] is scene:
+                group["offsets"][key] = (dx, dy)
+                self.update()
+                return
+        self._stamps.append(
+            {"scene": scene, "bufs": None, "offsets": {key: (dx, dy)}})
+        self.update()
+
+    def remove_stamp(self, key) -> bool:
+        """Drop one stamped placement. True if it was showing (undo probe)."""
+        for group in self._stamps:
+            if key in group["offsets"]:
+                del group["offsets"][key]
+                if not group["offsets"]:
+                    self._stamps.remove(group)
+                    if group["bufs"]:
+                        self._retired_stamp_bufs.append(group["bufs"])
+                self.update()
+                return True
+        return False
+
+    def clear_stamps(self) -> None:
+        for group in self._stamps:
+            if group["bufs"]:
+                self._retired_stamp_bufs.append(group["bufs"])
+        self._stamps.clear()
         self.update()
 
     # -- interactive PAN command (open/closed hand, AutoCAD-style) ------------
@@ -180,7 +220,18 @@ class Viewport(QOpenGLWidget):
             return
         touched = False
         for h in handles:
-            for batch_name, first, count in self._scene.handle_ranges.get(h, ()):
+            ranges = self._scene.handle_ranges.get(h, ())
+            if not ranges:
+                continue
+            if h not in self._hidden_rgba:
+                # save the alpha bytes so undo can un-hide surgically
+                self._hidden_rgba[h] = [
+                    (bn, first, count,
+                     getattr(self._scene, bn).data["rgba"][
+                         first:first + count, 3].copy())
+                    for bn, first, count in ranges
+                ]
+            for batch_name, first, count in ranges:
                 getattr(self._scene, batch_name).data["rgba"][
                     first:first + count, 3] = 0
                 self._pending_hide.append((batch_name, first, count))
@@ -188,6 +239,24 @@ class Viewport(QOpenGLWidget):
         if touched:
             if not self._scene_bufs:
                 # nothing uploaded yet: the full upload will carry the zeros
+                self._scene_dirty = True
+            self.update()
+
+    def unhide_handles(self, handles) -> None:
+        """Restore entities hidden by ``hide_handles`` (undo of a stamped
+        MOVE): the base-scene copy at the original position is still valid."""
+        touched = False
+        for h in handles:
+            saved = self._hidden_rgba.pop(h, None)
+            if not saved:
+                continue
+            for batch_name, first, count, alpha in saved:
+                getattr(self._scene, batch_name).data["rgba"][
+                    first:first + count, 3] = alpha
+                self._pending_hide.append((batch_name, first, count))
+                touched = True
+        if touched:
+            if not self._scene_bufs:
                 self._scene_dirty = True
             self.update()
 
@@ -377,6 +446,12 @@ class Viewport(QOpenGLWidget):
             gl.glClearColor(*BACKGROUND, 1.0)
         gl.glClear(GL_COLOR_BUFFER_BIT)
 
+        if self._retired_stamp_bufs:
+            for bufs in self._retired_stamp_bufs:
+                for vao, vbo, _count in bufs.values():
+                    vbo.destroy()
+                    vao.destroy()
+            self._retired_stamp_bufs.clear()
         if self._scene_dirty:
             self._upload_scene()
         elif self._pending_hide:
@@ -417,6 +492,31 @@ class Viewport(QOpenGLWidget):
             self._program.release()
             self._draw_thick(gl, scene_mvp, view_rect)
         else:
+            self._program.release()
+
+        if self._stamps:
+            self._program.bind()
+            for group in self._stamps:
+                if group["bufs"] is None:
+                    group["bufs"] = {}
+                    for name in ("triangles", "lines", "points"):
+                        batch: Batch = getattr(group["scene"], name)
+                        if batch.vertex_count:
+                            group["bufs"][name] = self._make_vao(batch.data)
+                ox, oy = group["scene"].origin
+                for dx, dy in group["offsets"].values():
+                    self._program.setUniformValue(
+                        self._loc_mvp, self._mvp(ox + dx, oy + dy))
+                    for name, mode in (("triangles", GL_TRIANGLES),
+                                       ("lines", GL_LINES),
+                                       ("points", GL_POINTS)):
+                        buf = group["bufs"].get(name)
+                        if buf is None:
+                            continue
+                        vao, _vbo, count = buf
+                        vao.bind()
+                        gl.glDrawArrays(mode, 0, count)
+                        vao.release()
             self._program.release()
 
         if self._overlay_scene is not None and self._overlay_bufs:

@@ -18,6 +18,10 @@ from ezdxf import recover
 from ezdxf.document import Drawing
 from ezdxf.lldxf.const import DXFStructureError
 
+from core import ezdxf_patches
+
+ezdxf_patches.apply()
+
 
 class DocumentError(Exception):
     """A DXF file could not be loaded."""
