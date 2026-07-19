@@ -38,6 +38,10 @@ def _patch_polygon_transform() -> None:
     Fix: snapshot the realized lines, let the original transform update the
     dxf header fields (those ARE computed correctly), then rebuild the lines
     from the snapshot with the RELATIVE delta.
+
+    Reported upstream: https://github.com/mozman/ezdxf/issues/1399 (still
+    present on master/1.4.5b0 — the scale half was fixed there, the angle
+    half was not). Drop this patch once a fixed release ships.
     """
     original = DXFPolygon.transform
 
