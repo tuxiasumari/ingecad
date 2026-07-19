@@ -24,17 +24,52 @@ and IngePresupuestos (construction budgeting).
   trim/offset/extend, survey points with elevations, and printing to scale.
   Not a feature-for-feature AutoCAD clone.
 
-## Status
+## Status — v0.1
 
-Early development (Phase 0: project skeleton — see `CLAUDE.md` for the full
-roadmap and phase gates).
+First usable release. What works today:
+
+- **Faithful viewer** for real-world DWG/DXF: nested blocks, MTEXT, hatches
+  (patterns + solids), linetypes, dimensions, OCS, paperspace layouts —
+  smooth pan/zoom even on cadastre-scale drawings (90k+ entities).
+- **DWG in and out**: open `.dwg` transparently via GNU LibreDWG; save as
+  DWG r2000 (LibreDWG) or r2018 (ODA File Converter, if installed), with a
+  silent verified-save check.
+- **Classic interface**: command line at the bottom with AutoCAD aliases
+  (`L`, `C`, `M`, `TR`, `Z`+`E` …), dark model space, Model/Layout tabs,
+  dockable Layers / Properties / Styles panels.
+- **Drawing & editing**: lines, circles, arcs, polylines, rectangles,
+  polygons, text, hatches, dimensions; ERASE / MOVE / COPY / ROTATE /
+  SCALE / MIRROR / OFFSET / TRIM / EXTEND / FILLET / EXPLODE, grips,
+  window/crossing selection, clipboard copy/paste.
+- **The AutoCAD feel**: object snaps with AutoSnap markers (END, MID, CEN,
+  NOD, INT, PER, NEA), ORTHO / POLAR, absolute / relative / polar
+  coordinate input, blocks (`B` / `I`), undo/redo of everything.
+- **Output**: print / export PDF and PNG to exact scale.
+
+Planned next (v0.2): survey-point import with elevations, coordinate
+tables, elevation profiles, paper-space editing. See `CLAUDE.md` for the
+roadmap.
 
 ## Running from source
 
 ```bash
+git clone https://github.com/tuxiasumari/ingecad.git
+cd ingecad
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 venv/bin/python main.py
+```
+
+**DWG support** needs the LibreDWG converters (`dwg2dxf` / `dxf2dwg`) on
+your `PATH` (most distros package `libredwg-tools`), or their binaries
+placed in `vendor/libredwg/bin/`. DXF works out of the box. Installing the
+freeware ODA File Converter additionally enables DWG r2018 export.
+
+To get the launcher entry, app icon and `.dwg`/`.dxf` double-click
+association on Linux:
+
+```bash
+./scripts/install-desktop.sh   # then log out/in once
 ```
 
 ## License
