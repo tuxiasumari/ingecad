@@ -41,6 +41,56 @@ for s in 16 24 32 48 64 128 256 512; do
     fi
 done
 
+# Document icons for .dwg / .dxf: register a MIME package so the files resolve
+# to our branded icon, and install the mimetype PNGs. Cosmetic — it does not
+# change which program opens the files.
+#
+# Icons must land not only in hicolor but in the ACTIVE icon theme (and its
+# parents): freedesktop icon lookup scans theme-by-theme, so a theme like Yaru
+# that ships a generic "image-x-generic" would otherwise shadow our specific
+# "image-vnd.dwg" (which only lives in hicolor, the last theme searched).
+ICONS_BASE="$HOME/.local/share/icons"
+MIME_DIR="$HOME/.local/share/mime"
+
+install_mime_icons() {  # $1 = theme dir name under ICONS_BASE
+    _src_base="$HERE/resources/icons/hicolor"
+    [ -d "$_src_base" ] || return 0
+    for _s in 16 24 32 48 64 128 256 512; do
+        _src="$_src_base/${_s}x${_s}/mimetypes"
+        [ -d "$_src" ] || continue
+        _dst="$ICONS_BASE/$1/${_s}x${_s}/mimetypes"
+        mkdir -p "$_dst"
+        cp "$_src"/*.png "$_dst/" 2>/dev/null || true
+    done
+    command -v gtk-update-icon-cache >/dev/null 2>&1 \
+        && gtk-update-icon-cache -f -t "$ICONS_BASE/$1" >/dev/null 2>&1 || true
+}
+
+if [ -d "$HERE/resources/icons/hicolor" ] && [ -f "$HERE/resources/mime/ingecad.xml" ]; then
+    install_mime_icons hicolor
+    # Active icon theme + the themes it inherits (so an "inherits-only" theme
+    # such as Yaru-dark gets covered through its parent Yaru).
+    THEME=$(gsettings get org.gnome.desktop.interface icon-theme 2>/dev/null \
+            | tr -d "'\"" || true)
+    THEMES="$THEME"
+    for _base in "$ICONS_BASE" /usr/share/icons /usr/local/share/icons; do
+        _idx="$_base/$THEME/index.theme"
+        if [ -f "$_idx" ]; then
+            _inh=$(grep -i '^Inherits' "$_idx" | head -1 | cut -d= -f2 | tr ',' ' ')
+            THEMES="$THEMES $_inh"
+            break
+        fi
+    done
+    for _t in $THEMES; do
+        [ -n "$_t" ] && [ "$_t" != "hicolor" ] && install_mime_icons "$_t"
+    done
+
+    mkdir -p "$MIME_DIR/packages"
+    cp "$HERE/resources/mime/ingecad.xml" "$MIME_DIR/packages/ingecad.xml"
+    command -v update-mime-database >/dev/null 2>&1 \
+        && update-mime-database "$MIME_DIR" >/dev/null 2>&1 || true
+fi
+
 command -v gtk-update-icon-cache >/dev/null 2>&1 \
     && gtk-update-icon-cache -f "$ICONS" >/dev/null 2>&1 || true
 command -v update-desktop-database >/dev/null 2>&1 \
@@ -54,5 +104,8 @@ echo "IngeCAD installed:"
 echo "  launcher : $BIN/ingecad"
 echo "  desktop  : $APPS/ingecad.desktop"
 echo "  icons    : $ICONS/*/apps/ingecad.*"
+echo "  files    : .dwg / .dxf now show a branded document icon"
 echo "If the launcher icon does not show yet, log out and back in"
 echo "(GNOME Shell only refreshes desktop entries/icons at login)."
+echo "For the .dwg/.dxf file icons, reload the file manager (Ctrl+R); if a"
+echo "window was already open, restart it with: nautilus -q"

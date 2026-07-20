@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Branded document icons for the drawing formats IngeCAD works with, so the
+  file manager shows them on .dwg / .dxf files. Both are standard shared-mime
+  types (image/vnd.dwg, image/vnd.dxf); here we only attach an <icon> and make
+  sure the globs are claimed — the file semantics and default openers are
+  unchanged.
+
+  Installed by scripts/install-desktop.sh into ~/.local/share/mime/packages/
+  followed by update-mime-database.
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Copyright (C) 2026 Marco Sumari Tellez and IngeCAD contributors.
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <!--
+    High priority (90) so the branded icon wins over other CAD packages that
+    claim the same extensions/magic (e.g. a BricsCAD install registers *.dwg
+    and the "AC10" magic at priority 80). Standard image/vnd.dwg is the sane
+    canonical type; we just make sure real .dwg files resolve to it.
+  -->
+  <mime-type type="image/vnd.dwg">
+    <comment>AutoCAD drawing</comment>
+    <comment xml:lang="es">Dibujo de AutoCAD (DWG)</comment>
+    <icon name="image-vnd.dwg"/>
+    <glob pattern="*.dwg" weight="90"/>
+    <magic priority="90">
+      <match type="string" offset="0" value="AC10"/>
+    </magic>
+  </mime-type>
+
+  <mime-type type="image/vnd.dxf">
+    <comment>DXF drawing</comment>
+    <comment xml:lang="es">Dibujo DXF</comment>
+    <icon name="image-vnd.dxf"/>
+    <glob pattern="*.dxf" weight="90"/>
+  </mime-type>
+</mime-info>
