@@ -164,6 +164,17 @@ Si upstream tarda o rechaza: **fork amistoso** (`tuxiasumari/libredwg`) — Inge
 - Wayland exige `glClear` explícito en `paintGL`; QPainter contamina el estado GL (re-establecer todo por frame); FBO propio si el depth/formato miente; tamaños en píxeles físicos (`devicePixelRatioF`); MSAA en el FBO de escena, no en el widget; `QMatrix4x4 * QVector4D` no bindea (usar `.map()`); Wayland puede intercalar frames viejos bajo ráfagas (cosmético, escape `QT_QPA_PLATFORM=xcb`).
 - Satélites: Wine re-encodea argv (rutas con acentos → ruta temp ASCII) — aplica si algún satélite fuera .exe; LibreDWG es nativo Linux así que este gotcha probablemente no aplica, pero el patrón de sanitización ya existe en IngeTrazo.
 - QSettings necesita `setOrganizationName/setApplicationName` fijados para persistir donde corresponde.
+- **Íconos de tipo de archivo (.dwg/.dxf) — la búsqueda de íconos es TEMA-MAYOR (gotcha caro, 2026-07-20).** Instalar el ícono de mimetype SOLO en `hicolor` NO alcanza cuando el tipo tiene un genérico que el tema activo provee: freedesktop recorre **tema por tema** (Yaru antes que hicolor) y prueba TODOS los nombres de fallback dentro de cada tema. Como `.dwg`/`.dxf` son `image/vnd.*`, su fallback incluye `image-x-generic`, que **Yaru sí tiene** → lo elige antes de llegar a nuestro `image-vnd.dwg` en hicolor (último). Fix: `install-desktop.sh` instala los PNGs de mimetype en el **tema activo (`gsettings ... icon-theme`) y sus padres** (`Inherits` del `index.theme`), no solo en hicolor. Además: MIME propio con `weight/priority="90"` para ganarle a otro paquete CAD que reclame la extensión/magic (un BricsCAD instalado toma `*.dwg` + magic `AC10` con prioridad 80). Diagnóstico definitivo: `Gtk.IconTheme.lookup_by_gicon` con GTK **4.0** (Nautilus 50 es GTK4) sobre el GIcon real del archivo — dice exactamente qué PNG se elige. Y limpiar `~/.cache/thumbnails` + `nautilus -q` porque `image/*` intenta miniatura y cachea la fallida.
+
+---
+
+## 🗓 Sesión 2026-07-20 — v0.1.1 (integración con el escritorio)
+
+Release `v0.1.1` (tag + release en `ingelibre/ingecad`; sin binarios Windows aún — solo `tests.yml`). Instalado y verificado en la PC del usuario. Lo hecho (detalle en commits `503d85c`/`22b176a`):
+- **Ícono de app renovado** (el usuario mejoró `resources/ingecad.svg`) + PNG/ICO rasterizados regenerados a `resources/icons/`.
+- **Íconos de documento branded para `.dwg`/`.dxf`** (`scripts/gen_doc_icons.py`, patrón IngeTrazo/IngePresupuestos: hoja + etiqueta DWG/DXF + insignia de IngeCAD → hicolor mimetypes + `.ico`) + paquete MIME `resources/mime/ingecad.xml`. Ver el gotcha "tema-mayor" arriba — fue el bug real por el que "no se veían".
+
+**Pendiente estratégico anotado: publicar a Flathub** (IngeCAD + IngeTrazo). Media: capturas PNG (1ª estática) + videos opcionales WebM/MKV VP9/AV1 sin audio <10 MiB (⇒ ~10-30s). Difícil: empaquetar PySide6+Qt6+GL **y compilar LibreDWG vendorizado** dentro del manifest Flatpak. App-ID candidato `io.github.ingelibre.IngeCAD`. Debe pasar `appstreamcli validate` (warnings fatales).
 
 ---
 
